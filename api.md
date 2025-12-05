@@ -1,6 +1,6 @@
 [api updated.md](https://github.com/user-attachments/files/23953376/api.updated.md)
 
-```markdown
+
 1. 用户主要功能模块
 	1.1 用户登录
 	1.2 用户注册
