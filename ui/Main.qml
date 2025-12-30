@@ -9,7 +9,7 @@ FluLauncher {
         FluApp.init(app)
 
         // 2. 全局基础配置
-        FluTheme.darkMode = FluThemeType.Dark
+        FluTheme.darkMode = FluThemeType.Light
         FluTheme.primaryColor = FluColors.Blue
         FluTheme.nativeText = true
         FluTheme.animationEnabled = true

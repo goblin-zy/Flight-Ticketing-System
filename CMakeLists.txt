@@ -39,7 +39,24 @@ set(QML_FILES
     ui/views/FlightInfoView.qml
     ui/views/OrdersView.qml
     ui/views/homeView.qml
+    ui/views/adminLogin.qml  # 新增的管理员登录页面
+    ui/views/FlightInfoEdit.qml  # 新增的管理员航班编辑页面
+    ui/views/AdminUserListView.qml  # 新增的管理员用户列表页面
+    ui/views/AdminUserOrdersView.qml  # 新增的管理员订单列表页面
+    ui/views/AdminFlightManageView.qml  # 新增的管理员航班管理页面
+    ui/component/ApiConfig.qml
+    ui/component/BookingDialog.qml
+    ui/component/FlightFilterBar.qml
+    ui/component/FlightItemCard.qml
+    ui/component/FlightPagination.qml
+    ui/component/OrderInfoCard.qml
+    ui/component/AdminUserCard.qml
+    ui/component/AdminOrderCard.qml
+    ui/component/FlightForm.qml  # 新增的航班表单组件
 )
+
+# 定义CSV数据文件路径
+set(CSV_FILES data/flight_data.csv)
 
 set(SOURCE_FILES
     main.cpp
@@ -57,11 +74,17 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp
 )
 
+set(RESOURCE_FILES
+    assets/LoginImage.png
+    ${CSV_FILES}
+)
+
 qt_add_qml_module(${PROJECT_NAME}
     URI FlightSystem
     VERSION 1.0
     RESOURCE_PREFIX /qt
     QML_FILES ${QML_FILES}
+    RESOURCES ${RESOURCE_FILES}
 )
 
 # ---------------------------------------------------------

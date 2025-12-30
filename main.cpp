@@ -8,6 +8,9 @@
 
 int main(int argc, char *argv[])
 {
+    // 【新增】 设置环境变量，允许 QML 使用 XMLHttpRequest 读取本地文件
+    qputenv("QML_XHR_ALLOW_FILE_READ", QByteArray("1"));
+
     QGuiApplication app(argc, argv);
 
     QQmlApplicationEngine engine;

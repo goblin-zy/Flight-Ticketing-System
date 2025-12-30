@@ -1,152 +1,169 @@
 import QtQuick 2.15
-import QtQuick.Layouts 1.15
-import QtQuick.Controls 2.15
 import FluentUI 1.0
+import App.Network 1.0
 
 FluPage {
-    id: registerPage
-    title: "用户注册"
-    backgroundColor: FluTheme.backgroundColor
+    id: registerView
 
-    Column {
-        anchors.centerIn: parent
-        spacing: 30
-        width: parent.width * 0.3
-        minimumWidth: 400
+    width: parent.width
+    height: parent.height
 
-        // Logo区域
-        Column {
-            anchors.horizontalCenter: parent.horizontalCenter
-            spacing: 15
+    // 添加提示对话框
+    FluContentDialog {
+        id: infoDialog
+        negativeText: "确定"
+        buttonFlags: FluContentDialogType.NegativeButton
+    }
 
-            FluIcon {
-                icon: FluentIcons.Airplane
-                size: 64
-                color: FluTheme.primaryColor
-            }
+    // 注册请求处理
+    NetworkManager {
+        id: registerHandler
 
-            Text {
-                text: "航班管理系统"
-                font.pixelSize: 24
-                font.bold: true
-                color: FluTheme.primaryTextColor
-                anchors.horizontalCenter: parent.horizontalCenter
+        // 请求成功处理
+        onRequestSuccess: function(data) {
+            if (data['code'] === 200) {
+                console.log("注册成功，开始自动登录")
+                // 注册成功后自动登录
+                loginHandler.request("/api/user/login", NetworkManager.POST, {
+                    telephone: phoneField.text,
+                    password: passwordField.text
+                })
+            } else {
+                console.error("注册失败:", data['message'])
+                infoDialog.title = data['message']
+                //infoDialog.message = data['message']
+                infoDialog.open()
             }
         }
 
-        // 注册表单
-        Column {
-            width: parent.width
-            spacing: 20
+        // 请求失败处理
+        onRequestFailed: function(error) {
+            console.log(JSON.stringify(error))
+            infoDialog.title = "网络连接错误"
+          //  infoDialog.message = "网络连接错误"
+            infoDialog.open()
+        }
+    }
 
-            // 电话号码输入框
-            Column {
-                spacing: 8
+    // 注册成功后自动登录的处理
+    NetworkManager {
+        id: loginHandler
 
-                FluTextBlock {
-                    text: "电话号码"
-                    fontSize: 14
-                    color: FluTheme.primaryTextColor
-                }
+        // 请求成功处理
+        onRequestSuccess: function(data) {
+            if (data['code'] === 200) {
+                console.log("注册后自动登录成功，token:", data['data']['token'])
+                // 先设置身份为普通用户，再保存token
+                userContext.isAdmin = false
+                // 保存token到用户上下文
+                userContext.myToken = data['data']['token']
+                // 直接从返回数据中赋值用户信息
+                userContext.userId = data['data']['userId'].toString()
+                userContext.userName = data['data']['username']
+                userContext.myTelephone = data['data']['telephone']
 
-                FluTextBox {
-                    id: regPhoneInput
-                    width: parent.width
-                    placeholderText: "请输入电话号码"
-                    focus: true
-
-                    // 简单的电话号码验证
-                    validator: RegExpValidator {
-                        regExp: /^1[3-9]\d{9}$/
-                    }
-                }
+                // 返回登录界面
+                // 修改后
+                console.log("注册并登录成功，跳转首页")
+                user_nav_view.push("qrc:/qt/FlightSystem/ui/views/homeView.qml")
+            } else {
+                console.error("注册后自动登录失败:", data['message'])
+                infoDialog.title = "自动登录失败，请手动登录"
+                //infoDialog.message = "自动登录失败，请手动登录"
+                infoDialog.open()
             }
+        }
 
-            // 密码输入框
-            Column {
-                spacing: 8
+        // 请求失败处理
+        onRequestFailed: function(error) {
+            console.log(JSON.stringify(error))
+            infoDialog.title = "网络连接错误"
+            //infoDialog.message = "网络连接错误"
+            infoDialog.open()
+        }
+    }
 
-                FluTextBlock {
-                    text: "密码"
-                    fontSize: 14
-                    color: FluTheme.primaryTextColor
-                }
+    Column {
+        spacing: 20
+        anchors.centerIn: parent
+        width: parent.width
+        height: parent.height
 
-                FluPasswordBox {
-                    id: regPasswordInput
-                    width: parent.width
-                    placeholderText: "请输入密码（至少6位）"
-                }
+        Rectangle{
+            anchors.horizontalCenter: parent.horizontalCenter  // 确保水平居中
+            width:280
+            height:150
+            radius: 45
+            clip: true
+            Image {
+                anchors.fill: parent
+                source: "../../assets/LoginImage.png"
             }
+        }
 
-            // 确认密码输入框
-            Column {
-                spacing: 8
+        FluTextBox {
+            anchors.horizontalCenter: parent.horizontalCenter  // 确保水平居中
+            id: phoneField
+            placeholderText: "电话号码"
+            width: parent.width * 0.8
+            focus: true
+        }
 
-                FluTextBlock {
-                    text: "确认密码"
-                    fontSize: 14
-                    color: FluTheme.primaryTextColor
-                }
+        FluTextBox {
+            anchors.horizontalCenter: parent.horizontalCenter  // 确保水平居中
+            id: userNameField
+            placeholderText: "用户名"
+            width: parent.width * 0.8
+        }
 
-                FluPasswordBox {
-                    id: regConfirmPasswordInput
-                    width: parent.width
-                    placeholderText: "请再次输入密码"
+        FluTextBox {
+            anchors.horizontalCenter: parent.horizontalCenter  // 确保水平居中
+            id: passwordField
+            placeholderText: "密码"
+            width: parent.width * 0.8
+            echoMode: TextInput.Password
+        }
 
-                    // 确认密码输入完成后按回车注册
-                    onAccepted: {
-                        if (registerButton.enabled) {
-                            registerButton.clicked()
-                        }
-                    }
-                }
+        FluTextBox {
+            anchors.horizontalCenter: parent.horizontalCenter  // 确保水平居中
+            id: confirmPasswordField
+            placeholderText: "确认密码"
+            width: parent.width * 0.8
+            echoMode: TextInput.Password
+        }
+
+        FluButton {
+            anchors.horizontalCenter: parent.horizontalCenter  // 确保水平居中
+            text: "注册"
+            width: parent.width * 0.8
+            enabled: phoneField.text.length>0 && userNameField.text.length>0 && passwordField.text.length>0 && passwordField.text === confirmPasswordField.text
+            onClicked: {
+                console.log("注册按钮点击，开始注册请求")
+                // 根据新API文档，注册接口应该是/api/user/register，使用POST方法
+                registerHandler.request("/api/user/register", NetworkManager.POST, {
+                    telephone: phoneField.text,
+                    username: userNameField.text,
+                    password: passwordField.text
+                })
             }
+        }
 
-            // 注册按钮
-            FluButton {
-                id: registerButton
-                width: parent.width
-                text: "注册"
-                isDefaultButton: true
-                enabled: (regPhoneInput.text.length === 11 && 
-                           regPasswordInput.text.length >= 6 && 
-                           regPasswordInput.text === regConfirmPasswordInput.text)
-
-                onClicked: {
-                    // 注册逻辑，暂时只做界面跳转
-                    console.log("注册按钮点击")
-                    // 注册成功后返回登录界面
-                    nav_view.pop()
-                }
+        // 登录选项
+        MouseArea {
+            anchors.horizontalCenter: parent.horizontalCenter
+            width: parent.width * 0.8
+            height: 30
+            onClicked: {
+                // 跳转到登录界面
+                user_nav_view.push("qrc:/qt/FlightSystem/ui/views/LoginView.qml")
             }
-
-            // 登录选项
-            Row {
-                anchors.horizontalCenter: parent.horizontalCenter
-                spacing: 8
-
-                Text {
-                    text: "已有账号？"
-                    font.pixelSize: 13
-                    color: FluTheme.secondaryTextColor
-                }
-
-                Text {
-                    text: "立即登录"
-                    font.pixelSize: 13
-                    color: FluTheme.primaryColor
-                    font.underline: true
-                    cursorShape: Qt.PointingHandCursor
-
-                    MouseArea {
-                        anchors.fill: parent
-                        onClicked: {
-                            // 返回登录界面
-                            nav_view.pop()
-                        }
-                    }
-                }
+            
+            Text {
+                anchors.centerIn: parent
+                text: "已有账号？立即登录"
+                font.pixelSize: 13
+                color: FluTheme.primaryColor
+                font.underline: true
             }
         }
     }

@@ -17,6 +17,7 @@ void NetworkManager::request(const QString &url, RequestMethod method, const QJs
     // 设置 Token
     if (!Token.isEmpty()) {
         request.setRawHeader("Authorization", QString("Bearer %1").arg(Token).toUtf8());
+        //request.setRawHeader("Authorization", Token.toUtf8());
     }
 
     // 根据不同方法构建请求
@@ -64,7 +65,7 @@ QUrl NetworkManager::buildUrlWithParams(const QString &baseUrl, const QJsonObjec
     QUrlQuery query;
 
     for (auto it = params.begin(); it != params.end(); ++it) {
-        query.addQueryItem(it.key(), it.value().toString());
+        query.addQueryItem(it.key(), it.value().toVariant().toString());
     }
 
     url.setQuery(query);
