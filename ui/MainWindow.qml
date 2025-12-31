@@ -170,7 +170,7 @@ FluWindow {
                 title: qsTr("航班管理")
                 icon: FluentIcons.Airplane
                 // 对应API 2.2.1 (搜索) 和 2.2.3 (修改)
-                url: "qrc:/qt/FlightSystem/ui/views/FlightInfoEdit.qml"
+                url: "qrc:/qt/FlightSystem/ui/views/AdminFlightManageView.qml"
                 onTap: {
                     // 拦截逻辑：检查管理员权限
                     if (userContext.myToken.length === 0 || !userContext.isAdmin) {
@@ -252,7 +252,7 @@ FluWindow {
                 if (userContext.myToken.length === 0 || !userContext.isAdmin) {
                     admin_nav_view.push("qrc:/qt/FlightSystem/ui/views/adminLogin.qml")
                 } else {
-                    admin_nav_view.push("qrc:/qt/FlightSystem/ui/views/FlightInfoEdit.qml")
+                    admin_nav_view.push("qrc:/qt/FlightSystem/ui/views/AdminFlightManageView.qml")
                 }
             })
         }

@@ -22,7 +22,7 @@ public:
     Q_ENUM(RequestMethod)
 
     // ！！！！！！！注意修改端口
-    explicit NetworkManager(QObject *parent = nullptr, QString api_url = "http://172.17.24.186:8080");
+    explicit NetworkManager(QObject *parent = nullptr, QString api_url = "http://172.27.122.32:8080");
 
     // 核心请求函数，保持 Q_INVOKABLE 以便 QML 调用
     Q_INVOKABLE void request(

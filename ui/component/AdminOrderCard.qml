@@ -9,6 +9,9 @@ FluFrame {
     // 12-28修改：增加颜色回退，防止 undefined 报错
     color: FluTheme.surfaceColor || "#ffffff"
 
+    // 新增：定义查看详情信号
+    signal viewDetails(string orderId)
+
     property string orderId: ""
     property string flightNumber: ""
     property string passengerName: ""
@@ -68,6 +71,8 @@ FluFrame {
                 text: "查看详情"
                 onClicked: {
                     console.log("12-28修改：点击查看订单详情：" + orderId)
+                    // 触发查看详情信号
+                    viewDetails(orderId)
                 }
             }
 

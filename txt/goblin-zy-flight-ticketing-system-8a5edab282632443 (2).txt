@@ -1,0 +1,3782 @@
+Directory structure:
+└── goblin-zy-flight-ticketing-system/
+    ├── README.md
+    ├── Admin.h
+    ├── AdminDao.h
+    ├── AdminService.cpp
+    ├── AdminService.h
+    ├── api.md
+    ├── DBManager.h
+    ├── flight.h
+    ├── FlightDao.h
+    ├── HttpServer.h
+    ├── main.cpp
+    ├── Orderchange.h
+    ├── OrderChangeDao.h
+    ├── OrderInfo.h
+    ├── OrderInfoDao.h
+    ├── Passenger.h
+    ├── PassengerDao.h
+    ├── TokenTool.cpp
+    ├── TokenTool.h
+    ├── User.h
+    ├── UserDao.h
+    └── UserService.h
+
+================================================
+FILE: README.md
+================================================
+# Flight-Ticketing-System
+航班票务系统
+
+
+
+================================================
+FILE: Admin.h
+================================================
+#ifndef ADMIN_H
+#define ADMIN_H
+
+#include <QObject>
+#include <QString>
+
+class Admin : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(int adminId READ adminId WRITE setAdminId)
+    Q_PROPERTY(QString adminAccount READ adminAccount WRITE setAdminAccount)
+    Q_PROPERTY(QString adminPassword READ adminPassword WRITE setAdminPassword)
+    Q_PROPERTY(QString adminName READ adminName WRITE setAdminName)
+
+public:
+    explicit Admin(QObject *parent = nullptr)
+        : QObject(parent), m_adminId(0) {}
+
+    // --- Getter ---
+    int adminId() const { return m_adminId; }
+    QString adminAccount() const { return m_adminAccount; }
+    QString adminPassword() const { return m_adminPassword; }
+    QString adminName() const { return m_adminName; }
+
+    // --- Setter ---
+    void setAdminId(int adminId) { m_adminId = adminId; }
+    void setAdminAccount(const QString &adminAccount) { m_adminAccount = adminAccount; }
+    void setAdminPassword(const QString &adminPassword) { m_adminPassword = adminPassword; }
+    void setAdminName(const QString &adminName) { m_adminName = adminName; }
+
+private:
+    int m_adminId;              // 管理员主键ID
+    QString m_adminAccount;     // 登录账号
+    QString m_adminPassword;    // 登录密码
+    QString m_adminName;        // 管理员姓名/昵称
+};
+
+#endif // ADMIN_H
+
+
+
+================================================
+FILE: AdminDao.h
+================================================
+#ifndef ADMINDAO_H
+#define ADMINDAO_H
+
+#include <QString>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QSqlQuery>
+#include <QSqlError>
+#include <QVariant>
+#include <QDebug>
+#include "DBManager.h"
+
+class AdminDao {
+public:
+    AdminDao() = default;
+
+    // [2.1.1] 管理员登录验证
+    QJsonObject login(const QString& account, const QString& pwd) {
+        qDebug() << "[DAO-DEBUG] >>> 进入 AdminDao::login"; // 函数进入监控
+        qDebug() << "[DAO-DEBUG] 管理员登录尝试, 账号:" << account;
+        QSqlQuery query(DBManager::getInstance().getConnection());
+        query.prepare("SELECT admin_id, admin_name FROM admin WHERE admin_account = ? AND admin_password = ?");
+        query.addBindValue(account);
+        query.addBindValue(pwd);
+
+        if (query.exec()) {
+            if (query.next()) {
+                QJsonObject obj;
+                obj["adminId"] = query.value("admin_id").toInt();
+                obj["adminName"] = query.value("admin_name").toString();
+                qDebug() << "[DAO-DEBUG] 登录成功, AdminID:" << obj["adminId"].toInt();
+                return obj;
+            } else {
+                qDebug() << "[DAO-DEBUG] 登录失败: 账号或密码错误";
+            }
+        } else {
+            qDebug() << "[DAO-DEBUG] SQL执行错误:" << query.lastError().text();
+        }
+        return QJsonObject();
+    }
+
+    // [2.2.1] 添加航班
+    bool addFlight(const QJsonObject& json, int& outId) {
+        qDebug() << "[DAO-DEBUG] >>> 进入 AdminDao::addFlight"; // 函数进入监控
+        qDebug() << "[DAO-DEBUG] 开始添加航班, 航班号:" << json["flightNumber"].toString();
+        QSqlQuery query(DBManager::getInstance().getConnection());
+        query.prepare("INSERT INTO flight (flight_number, departure_city, arrival_city, departure_airport, "
+                      "arrival_airport, date, departure_time, arrival_time, checkin_start_time, "
+                      "checkin_end_time, price, airline_company, status, left_tickets) "
+                      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+
+        query.addBindValue(json["flightNumber"].toString());
+        query.addBindValue(json["departureCity"].toString());
+        query.addBindValue(json["arrivalCity"].toString());
+        query.addBindValue(json["departureAirport"].toString());
+        query.addBindValue(json["arrivalAirport"].toString());
+        query.addBindValue(json["date"].toString());
+        query.addBindValue(json["departureTime"].toString());
+        query.addBindValue(json["arrivalTime"].toString());
+        query.addBindValue(json["checkinStartTime"].toString());
+        query.addBindValue(json["checkinEndTime"].toString());
+        query.addBindValue(json["price"].toInt());
+        query.addBindValue(json["airlineCompany"].toString());
+        query.addBindValue(json["status"].toString());
+        query.addBindValue(json["leftTickets"].toInt());
+
+        if (query.exec()) {
+            outId = query.lastInsertId().toInt();
+            qDebug() << "[DAO-DEBUG] 航班添加成功, 新分配ID:" << outId;
+            return true;
+        }
+        qDebug() << "[DAO-DEBUG] 添加航班失败:" << query.lastError().text();
+        return false;
+    }
+
+    // [2.2.2] 删除航班 (需检查是否有订单关联)
+    bool deleteFlight(int flightId, QString& errorMsg) {
+        qDebug() << "[DAO-DEBUG] >>> 进入 AdminDao::deleteFlight"; // 函数进入监控
+        qDebug() << "[DAO-DEBUG] 尝试删除航班ID:" << flightId;
+        QSqlDatabase db = DBManager::getInstance().getConnection();
+        QSqlQuery query(db);
+
+        // 1. 检查是否有未取消的订单关联
+        query.prepare("SELECT COUNT(*) FROM order_info WHERE flight_id = ? AND status != '已取消'");
+        query.addBindValue(flightId);
+        if (query.exec() && query.next()) {
+            int count = query.value(0).toInt();
+            if (count > 0) {
+                errorMsg = "该航班尚有有效订单，无法删除";
+                qDebug() << "[DAO-DEBUG] 拦截删除:" << errorMsg << ", 订单数:" << count;
+                return false;
+            }
+        }
+
+        // 2. 执行删除
+        query.prepare("DELETE FROM flight WHERE flight_id = ?");
+        query.addBindValue(flightId);
+        bool ok = query.exec();
+        if(!ok) qDebug() << "[DAO-DEBUG] 删除SQL失败:" << query.lastError().text();
+        else qDebug() << "[DAO-DEBUG] 删除成功";
+        return ok;
+    }
+
+    // [2.2.3] 修改航班 (动态SQL实现)
+    bool updateFlight(const QJsonObject& json) {
+        qDebug() << "[DAO-DEBUG] >>> 进入 AdminDao::updateFlight"; // 函数进入监控
+        int flightId = json["flightId"].toInt();
+        qDebug() << "[DAO-DEBUG] 开始更新航班ID:" << flightId;
+        if (!json.contains("flightId")) return false;
+
+        QStringList updateFields;
+        // 动态检查 JSON 包含哪些字段就更新哪些
+        if (json.contains("flightNumber")) updateFields << "flight_number = :num";
+        if (json.contains("price")) updateFields << "price = :price";
+        if (json.contains("status")) updateFields << "status = :status";
+        if (json.contains("leftTickets")) updateFields << "left_tickets = :tickets";
+        if (json.contains("departureTime")) updateFields << "departure_time = :dtime";
+        if (json.contains("arrivalTime")) updateFields << "arrival_time = :atime";
+
+        if (updateFields.isEmpty()) {
+            qDebug() << "[DAO-DEBUG] 无更新字段";
+            return true;
+        }
+
+        QString sql = "UPDATE flight SET " + updateFields.join(", ") + " WHERE flight_id = :id";
+        qDebug() << "[DAO-DEBUG] 生成的SQL:" << sql;
+
+        QSqlQuery query(DBManager::getInstance().getConnection());
+        query.prepare(sql);
+
+        // 绑定参数
+        query.bindValue(":id", flightId);
+        if (json.contains("flightNumber")) query.bindValue(":num", json["flightNumber"].toString());
+        if (json.contains("price")) query.bindValue(":price", json["price"].toInt());
+        if (json.contains("status")) query.bindValue(":status", json["status"].toString());
+        if (json.contains("leftTickets")) query.bindValue(":tickets", json["leftTickets"].toInt());
+        if (json.contains("departureTime")) query.bindValue(":dtime", json["departureTime"].toString());
+        if (json.contains("arrivalTime")) query.bindValue(":atime", json["arrivalTime"].toString());
+
+        bool ok = query.exec();
+        if(!ok) qDebug() << "[DAO-DEBUG] 更新SQL失败:" << query.lastError().text();
+        else qDebug() << "[DAO-DEBUG] 更新成功";
+        return ok;
+    }
+
+    // [2.3.2] 查询所有客户 (带分页和搜索) - 优化 ID 过滤逻辑
+    QJsonObject queryUsersPaged(const QString& telephone, const QString& username, int pageNum, int pageSize, int userId = 0) {
+        qDebug() << "[DAO-DEBUG] >>> 进入 AdminDao::queryUsersPaged";
+        qDebug() << "[DAO-DEBUG] 过滤参数 -> ID:" << userId << "手机:" << telephone << "用户名:" << username;
+
+        QSqlQuery query(DBManager::getInstance().getConnection());
+
+        // 1. 动态构造条件列表
+        QStringList filters;
+        if (userId > 0) {
+            filters << QString("user_id = %1").arg(userId);
+        }
+        if (!telephone.isEmpty()) {
+            filters << QString("telephone LIKE '%%1%'").arg(telephone);
+        }
+        if (!username.isEmpty()) {
+            filters << QString("username LIKE '%%1%'").arg(username);
+        }
+
+        // 2. 组装 WHERE 子句
+        QString whereClause = "";
+        if (!filters.isEmpty()) {
+            whereClause = " WHERE " + filters.join(" AND ");
+        }
+
+        // 3. 获取总数
+        int total = 0;
+        QString countSql = "SELECT COUNT(*) FROM user" + whereClause;
+        if(query.exec(countSql) && query.next()) {
+            total = query.value(0).toInt();
+        }
+
+        // 4. 执行分页查询
+        // 注意：LIMIT 和 OFFSET 之间必须有空格，%1 后面也需要空格
+        QString sql = QString("SELECT user_id, telephone, username, balance, register_time FROM user %1 LIMIT %2 OFFSET %3")
+                          .arg(whereClause)
+                          .arg(pageSize)
+                          .arg((pageNum - 1) * pageSize);
+
+        qDebug() << "[DAO-DEBUG] 执行SQL:" << sql;
+
+        QJsonArray arr;
+        if (query.exec(sql)) {
+            while (query.next()) {
+                QJsonObject u;
+                u["userId"] = query.value("user_id").toInt();
+                u["telephone"] = query.value("telephone").toString();
+                u["username"] = query.value("username").toString();
+                u["balance"] = query.value("balance").toInt();
+                u["registerTime"] = query.value("register_time").toDateTime().toString("yyyy-MM-dd HH:mm:ss");
+                arr.append(u);
+            }
+        } else {
+            qDebug() << "[DAO-DEBUG] SQL执行失败:" << query.lastError().text();
+        }
+
+        QJsonObject res;
+        res["total"] = total;
+        res["list"] = arr;
+        return res;
+    }
+
+    // [2.3.3] 查询所有订单 (带分页和多条件搜索) - 增强orderId筛选
+    QJsonObject queryOrdersAdmin(const QJsonObject& params) {
+        qDebug() << "[DAO-DEBUG] >>> 进入 AdminDao::queryOrdersAdmin";
+        qDebug() << "[DAO-DEBUG] 管理员查询订单, 参数:" << params;
+
+        QSqlQuery query(DBManager::getInstance().getConnection());
+        QString where = " WHERE 1=1";
+
+        // ===== orderId 精确筛选 =====
+        if (params.contains("orderId") && !params["orderId"].toString().isEmpty()) {
+            QString orderIdValue = params["orderId"].toString();
+            // 使用LIKE进行模糊匹配（如果前端需要精确匹配，可以改为 = 号）
+            where += QString(" AND o.order_id LIKE '%%1%'").arg(orderIdValue);
+            qDebug() << "[DAO-DEBUG] 添加orderId筛选条件:" << orderIdValue;
+        }
+
+        // ===== 电话筛选 =====
+        if (params.contains("telephone") && !params["telephone"].toString().isEmpty()) {
+            QString telValue = params["telephone"].toString();
+            where += QString(" AND u.telephone LIKE '%%1%'").arg(telValue);
+            qDebug() << "[DAO-DEBUG] 添加电话筛选条件:" << telValue;
+        }
+
+        // ===== 状态筛选 =====
+        if (params.contains("status") && !params["status"].toString().isEmpty()) {
+            QString statusValue = params["status"].toString();
+            where += QString(" AND o.status = '%1'").arg(statusValue);
+            qDebug() << "[DAO-DEBUG] 添加状态筛选条件:" << statusValue;
+        }
+
+        // ===== 日期范围筛选 =====
+        if (params.contains("startDate") && !params["startDate"].toString().isEmpty()) {
+            QString startDate = params["startDate"].toString();
+            where += QString(" AND DATE(o.create_time) >= '%1'").arg(startDate);
+            qDebug() << "[DAO-DEBUG] 添加开始日期筛选:" << startDate;
+        }
+
+        if (params.contains("endDate") && !params["endDate"].toString().isEmpty()) {
+            QString endDate = params["endDate"].toString();
+            where += QString(" AND DATE(o.create_time) <= '%1'").arg(endDate);
+            qDebug() << "[DAO-DEBUG] 添加结束日期筛选:" << endDate;
+        }
+
+        // ===== 用户ID筛选 =====
+        if (params.contains("userId") && params["userId"].toInt() > 0) {
+            int userId = params["userId"].toInt();
+            where += QString(" AND o.user_id = %1").arg(userId);
+            qDebug() << "[DAO-DEBUG] 添加用户ID筛选:" << userId;
+        }
+
+        // 联表查用户手机号
+        QString sqlBase = "FROM order_info o JOIN user u ON o.user_id = u.user_id " + where;
+
+        // 获取总数
+        QString countSql = "SELECT COUNT(*) " + sqlBase;
+        qDebug() << "[DAO-DEBUG] 总数SQL:" << countSql;
+
+        int total = 0;
+        if(query.exec(countSql) && query.next()) {
+            total = query.value(0).toInt();
+            qDebug() << "[DAO-DEBUG] 查询到的总数:" << total;
+        }
+
+        // 分页参数
+        int pageNum = params["pageNum"].toInt(1);
+        int pageSize = params["pageSize"].toInt(10);
+        int offset = (pageNum - 1) * pageSize;
+
+        // 构造查询SQL
+        QString sql = QString("SELECT o.*, u.telephone, u.username %1 ORDER BY o.create_time DESC LIMIT %2 OFFSET %3")
+                          .arg(sqlBase)
+                          .arg(pageSize)
+                          .arg(offset);
+
+        qDebug() << "[DAO-DEBUG] 分页查询SQL:" << sql;
+
+        QJsonArray arr;
+        if (query.exec(sql)) {
+            while (query.next()) {
+                QJsonObject o;
+                o["orderId"] = query.value("order_id").toString();
+                o["userId"] = query.value("user_id").toInt();
+                o["username"] = query.value("username").toString();
+                o["telephone"] = query.value("telephone").toString();
+                o["flightId"] = query.value("flight_id").toInt();
+                o["totalPrice"] = query.value("total_price").toInt();
+                o["status"] = query.value("status").toString();
+                o["createTime"] = query.value("create_time").toDateTime().toString("yyyy-MM-dd HH:mm:ss");
+
+                // 可选：添加航班信息（如果需要的话）
+                // o["flightNumber"] = query.value("flight_number").toString();
+                // o["departureCity"] = query.value("departure_city").toString();
+
+                arr.append(o);
+            }
+        } else {
+            qDebug() << "[DAO-DEBUG] 订单查询SQL执行失败:" << query.lastError().text();
+        }
+
+        qDebug() << "[DAO-DEBUG] 查询完成, 总数:" << total << "当前条数:" << arr.size();
+
+        QJsonObject res;
+        res["total"] = total;
+        res["pageNum"] = pageNum;
+        res["pageSize"] = pageSize;
+        res["list"] = arr;
+        return res;
+    }
+};
+
+#endif // ADMINDAO_H
+
+
+
+================================================
+FILE: AdminService.cpp
+================================================
+#include "AdminService.h"
+#include "AdminDao.h"
+#include "TokenTool.h"
+#include "DBManager.h"
+#include <QDebug>
+#include <QSqlQuery>
+#include <QSqlError>       // 必须添加，否则 query.lastError() 报错
+#include <QNetworkRequest> // 必须添加，否则 getAdminInfo 参数类型不识别
+#include <QDateTime>
+#include <QNetworkRequest>
+
+// 管理员登录
+QJsonObject AdminService::login(const QString& account, const QString& pwd) {
+    AdminDao dao;
+    QJsonObject adminData = dao.login(account, pwd);
+
+    if (!adminData.isEmpty()) {
+
+        int adminId = adminData["adminId"].toInt();
+        QString token = TokenTool::generateToken(adminId);
+        TokenTool::saveToken(adminId, token);
+
+        QJsonObject data;
+        data["adminId"] = adminId;
+        data["adminAccount"] = account;
+        data["adminName"] = adminData["adminName"].toString();
+        data["token"] = "Bearer " + token;
+
+        return {{"code", 200}, {"message", "登录成功"}, {"data", data}};
+    }
+    return {{"code", 500}, {"message", "账号或密码错误"}};
+}
+
+QJsonObject AdminService::getAdminInfo(const QNetworkRequest& request) {
+    // 1. 从请求头获取Authorization字段
+    QByteArray authHeader = request.rawHeader("Authorization");
+    if (authHeader.isEmpty()) {
+        return {{"code", 401}, {"message", "未提供Authorization头"}};
+    }
+
+    // 2. 直接传入完整的Authorization头，TokenTool内部会处理Bearer前缀
+    QString authorizationHeader = QString::fromUtf8(authHeader);
+    // 先去掉 "Bearer " 前缀，再校验
+    QString pureToken = TokenTool::removeBearerPrefix(authorizationHeader);
+    int adminId = TokenTool::verifyToken(pureToken);
+
+    if (adminId == -1) {
+        return {{"code", 401}, {"message", "token无效或已过期"}};
+    }
+
+    // 3. 查询管理员信息
+    QSqlQuery query(DBManager::getInstance().getConnection());
+    query.prepare("SELECT admin_account, admin_name FROM admin WHERE admin_id = ?");
+    query.addBindValue(adminId);
+
+    if (query.exec() && query.next()) {
+        QJsonObject data;
+        data["adminId"] = adminId;
+        data["adminAccount"] = query.value("admin_account").toString();
+        data["adminName"] = query.value("admin_name").toString();
+        return {{"code", 200}, {"message", "success"}, {"data", data}};
+    } else {
+        qDebug() << "获取管理员信息失败：" << query.lastError().text();
+        return {{"code", 500}, {"message", "服务器内部错误：无法获取管理员信息"}};
+    }
+}
+
+// 添加航班
+QJsonObject AdminService::addFlight(const QJsonObject& flightJson) {
+    AdminDao dao;
+    int newFlightId = 0;
+    if (dao.addFlight(flightJson, newFlightId)) {
+        QJsonObject data;
+        data["flightId"] = newFlightId;
+        return {{"code", 200}, {"message", "航班添加成功"}, {"data", data}};
+    }
+    return {{"code", 500}, {"message", "添加失败，请检查数据格式"}};
+}
+
+// 删除航班
+QJsonObject AdminService::deleteFlight(int flightId) {
+    AdminDao dao;
+    QString errorMsg;
+    if (dao.deleteFlight(flightId, errorMsg)) {
+        return {{"code", 200}, {"message", "删除成功"}};
+    }
+    return {{"code", 500}, {"message", errorMsg.isEmpty() ? "删除失败" : errorMsg}};
+}
+
+// 修改航班
+QJsonObject AdminService::updateFlight(const QJsonObject& flightJson) {
+    AdminDao dao;
+    if (dao.updateFlight(flightJson)) {
+        return {{"code", 200}, {"message", "更新成功"}};
+    }
+    return {{"code", 500}, {"message", "更新失败"}};
+}
+
+/**
+ * @brief [2.3.2] 分页查询客户列表
+ * 逻辑：支持 userId/手机/用户名 筛选，并进行字段脱敏（去除余额）
+ */
+QJsonObject AdminService::queryAllUsers(const QJsonObject& params) {
+    AdminDao dao;
+
+    // 1. 提取过滤参数 (优化提取逻辑)
+    // 使用 toVariant().toInt() 是最安全的方法，能同时兼容 "1" (字符串) 和 1 (数字)
+    int userId = 0;
+    if (params.contains("userId")) {
+        userId = params.value("userId").toVariant().toInt();
+    }
+
+    QString tel = params["telephone"].toString();
+    QString name = params["username"].toString();
+
+    // 2. 提取分页参数并设置默认值
+    // 同样建议对分页参数使用 toVariant() 增强兼容性
+    int pageNum = params.value("pageNum").toVariant().toInt();
+    int pageSize = params.value("pageSize").toVariant().toInt();
+    if (pageNum <= 0) pageNum = 1;
+    if (pageSize <= 0) pageSize = 20;
+
+    // 3. 获取原始数据
+    QJsonObject rawData = dao.queryUsersPaged(tel, name, pageNum, pageSize, userId);
+
+    // 4. --- 结构重组 (适配目标 2.3.2 规范) ---
+    QJsonObject data;
+    data.insert("total", rawData["total"].toInt());
+    data.insert("pageNum", pageNum);
+    data.insert("pageSize", pageSize);
+
+    QJsonArray cleanList;
+    QJsonArray rawList = rawData["list"].toArray();
+    for (const QJsonValue& value : rawList) {
+        QJsonObject userObj = value.toObject();
+        QJsonObject cleanUser;
+        // 严格按照文档要求只提取四个字段，剔除敏感的 balance
+        cleanUser.insert("userId", userObj["userId"]);
+        cleanUser.insert("telephone", userObj["telephone"]);
+        cleanUser.insert("username", userObj["username"]);
+        cleanUser.insert("registerTime", userObj["registerTime"]);
+        cleanList.append(cleanUser);
+    }
+    data.insert("list", cleanList);
+
+    // 5. 按照规范，如果没有匹配数据则返回 500
+    if (data["total"].toInt() == 0) {
+        return {{"code", 500}, {"message", "无数据"}, {"data", QJsonValue::Null}};
+    }
+
+    return {{"code", 200}, {"message", "查询成功"}, {"data", data}};
+}
+
+// 查询所有订单
+        QJsonObject AdminService::queryAllOrders(const QJsonObject& params) {
+    AdminDao dao;
+
+    // 设置默认分页参数
+    QJsonObject queryParams = params;
+    if (!queryParams.contains("pageNum")) queryParams["pageNum"] = 1;
+    if (!queryParams.contains("pageSize")) queryParams["pageSize"] = 10;
+
+    // 调用DAO层方法
+    QJsonObject data = dao.queryOrdersAdmin(queryParams);
+    return {{"code", 200}, {"message", "success"}, {"data", data}};
+}
+
+
+
+================================================
+FILE: AdminService.h
+================================================
+#ifndef ADMINSERVICE_H
+#define ADMINSERVICE_H
+
+#include <QJsonObject>
+#include <QString>
+#include <QNetworkRequest>  // 添加这行
+#include "TokenTool.h"
+#include "DBManager.h"
+
+class AdminService {
+public:
+    // [2.1.1] 管理员登录
+    static QJsonObject login(const QString& account, const QString& pwd);
+
+    // [API 附录] 获取管理员信息 (用于前端 UserContext 初始化)
+    static QJsonObject getAdminInfo(const QNetworkRequest& request);
+
+    // [2.2.1] 添加航班
+    static QJsonObject addFlight(const QJsonObject& flightJson);
+
+    // [2.2.2] 删除航班
+    static QJsonObject deleteFlight(int flightId);
+
+    // [2.2.3] 修改航班
+    static QJsonObject updateFlight(const QJsonObject& flightJson);
+
+    // [2.3.2] 查询所有客户 (分页)
+    static QJsonObject queryAllUsers(const QJsonObject& params);
+
+    // [2.3.3] 查询所有订单 (分页/多条件)
+    static QJsonObject queryAllOrders(const QJsonObject& params);
+};
+
+#endif // ADMINSERVICE_H
+
+
+
+================================================
+FILE: api.md
+================================================
+[api updated.md](https://github.com/user-attachments/files/23953376/api.updated.md)
+
+
+1. 用户主要功能模块
+	1.1 用户登录
+	1.2 用户注册
+	1.3 获取/修改用户信息（个人中心）
+	1.4 航班查询（特定条件+分页）
+	1.5 用户个人中心（个人订单）
+	1.6 订票
+	1.7 订单支付
+	1.8 订单退签（针对已付款）
+	1.9 删除订单（针对未付款）
+	1.10 改签
+
+2. 管理员主要功能模块
+	2.1 管理员登录
+	2.2 管理员注册
+	2.3 航班信息增删改
+	2.4 管理员查询航班
+	2.5 管理员查看所有客户信息
+	2.6 管理员查看所有订单信息
+
+### 1. 用户相关接口
+#### 1.1 用户登录接口
+- URL：`/api/user/login`
+- 请求方式：POST
+- 传入 JSON（客户端→服务端）：
+```json
+{
+  "telephone": "string",  // 用户用手机号码注册账号
+  "password": "string"    // 用户密码
+}
+```
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "telephone": "string",  // 登录成功的用户手机号
+    "token": "string"       // 登录凭证（用于后续接口身份验证）
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：账号或密码错误）",
+  "data": null
+}
+```
+
+#### 1.2 用户注册接口
+- URL：`/api/user/register`
+- 请求方式：POST
+- 传入 JSON（客户端→服务端）：
+```json
+{
+  "telephone": "string",  // 注册手机号
+  "password": "string",   // 注册密码
+  "username": "string"    // 用户名
+}
+```
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "注册成功",
+  "data": {
+    "telephone": "string"  // 注册成功的手机号
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：手机号已被注册）",
+  "data": null
+}
+```
+
+#### 1.3 获取/修改用户信息接口（个人中心）
+##### 1.3.1 获取用户信息
+- URL：`/api/user/info/get`
+- 请求方式：GET
+- 传入参数（URL 拼接）：
+```json
+{
+  "telephone": "string",  // 登录用户的手机号
+  "token": "string"       // 登录凭证（身份验证）
+}
+```
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "telephone": "string",  // 用户手机号
+    "username": "string",   // 用户名
+    "registerTime": "string"// 注册时间（格式：YYYY-MM-DD HH:MM:SS）
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：用户不存在、token 失效）",
+  "data": null
+}
+```
+
+##### 1.3.2 修改用户信息
+- URL：`/api/user/info/update`
+- 请求方式：POST
+- 传入 JSON（客户端→服务端）：
+```json
+{
+  "telephone": "string",  // 登录用户的手机号
+  "token": "string",      // 登录凭证（身份验证）
+  "username": "string",   // 新用户名（可选，不修改则不填）
+  "password": "string"    // 新密码（可选，不修改则不填）
+}
+```
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "信息修改成功",
+  "data": {
+    "telephone": "string",  // 用户手机号
+    "username": "string"    // 修改后的用户名（未修改则返回原用户名）
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：token 失效、参数为空）",
+  "data": null
+}
+```
+
+#### 1.4 航班查询接口（特定条件+分页）
+- URL：`/api/flight/search`
+- 请求方式：GET
+- 传入参数（URL 拼接）：
+```json
+{
+  "departureCity": "string",  // 出发城市（可选，为空则不限）
+  "arrivalCity": "string",    // 目的城市（可选，为空则不限）
+  "date": "string",           // 航班日期（可选，格式：YYYY-MM-DD，为空则不限）
+  "airlineCompany": "string", // 航空公司（可选，为空则不限）
+  "minPrice": "number",       // 最低价格（可选，为空则不限）
+  "maxPrice": "number",       // 最高价格（可选，为空则不限）
+  "pageNum": "number",        // 页码（必填，从 1 开始）
+  "pageSize": "number"        // 每页条数（必填，如 10、20）
+}
+```
+- URL 示例：`/api/flight/search?departureCity=北京&arrivalCity=上海&date=2025-12-01&pageNum=1&pageSize=10`
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "total": "number",        // 总航班数
+    "pageNum": "number",      // 当前页码
+    "pageSize": "number",     // 每页条数
+    "list": [
+      {
+        "flightId": "number",       // 航班ID
+        "flightNumber": "string",   // 航班号
+        "departureCity": "string",  // 出发城市
+        "arrivalCity": "string",    // 目的城市
+        "departureTime": "string",  // 起飞时间（格式：HH:MM）
+        "arrivalTime": "string",    // 到达时间（格式：HH:MM）
+        "departureAirport": "string",// 出发机场
+        "arrivalAirport": "string",  // 到达机场
+        "checkinStartTime": "string",// 值机开始时间
+        "checkinEndTime": "string",  // 值机结束时间
+        "price": "number",           // 航班价格
+        "airlineCompany": "string",  // 航空公司
+        "status": "string"           // 航班状态（如：正常、延误）
+      }
+    ]
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：无匹配航班、页码格式错误）",
+  "data": null
+}
+```
+
+#### 1.5 订单查询接口（个人中心）
+- URL：`/api/order/query`
+- 请求方式：GET
+- 传入参数（URL 拼接）：
+```json
+{
+  "telephone": "string",  // 登录用户的手机号
+  "token": "string",      // 登录凭证（身份验证）
+  "status": "string"      // 订单状态（可选，如：待支付、已完成、已退签，为空则查询所有）
+}
+```
+- URL 示例：`/api/order/query?telephone=13800138000&token=xxx&status=待支付`
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": [
+    {
+      "orderId": "string",        // 订单ID
+      "flightNumber": "string",   // 航班号
+      "departureCity": "string",  // 出发城市
+      "arrivalCity": "string",    // 目的城市
+      "departureTime": "string",  // 起飞时间
+      "passengers": [             // 乘客列表
+        {
+          "name": "string",       // 乘客姓名
+          "idCard": "string"      // 乘客身份证号
+        }
+      ],
+      "status": "string",         // 订单状态（如：待支付、已完成）
+      "createTime": "string"      // 订单创建时间（格式：YYYY-MM-DD HH:MM:SS）
+    }
+  ]
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：无订单记录、token 失效）",
+  "data": null
+}
+```
+
+#### 1.6 机票预订接口
+- URL：`/api/order/book`
+- 请求方式：POST
+- 传入 JSON（客户端→服务端）：
+```json
+{
+  "telephone": "string",         // 预订用户的手机号
+  "token": "string",             // 登录凭证（身份验证）
+  "flightId": "number",          // 选择的航班ID
+  "passengers": [                // 乘客信息列表
+    {
+      "name": "string",          // 乘客姓名
+      "idCard": "string"         // 乘客身份证号
+    }
+  ]
+}
+```
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "订票成功",
+  "data": {
+    "orderId": "string",  // 生成的订单ID
+    "status": "string"    // 订单状态（如：待支付）
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：航班余票不足、token 失效）",
+  "data": null
+}
+```
+
+#### 1.7 订单支付接口
+- URL：`/api/order/pay`
+- 请求方式：POST
+- 传入 JSON（客户端→服务端）：
+```json
+{
+  "telephone": "string",  // 登录用户的手机号
+  "token": "string",      // 登录凭证（身份验证）
+  "orderId": "string"     // 要支付的订单ID
+}
+```
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "支付成功",
+  "data": {
+    "orderId": "string",  // 支付的订单ID
+    "status": "string",   // 订单状态（已支付）
+    "payTime": "string"   // 支付时间（格式：YYYY-MM-DD HH:MM:SS）
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：订单不存在、订单已支付、token 失效）",
+  "data": null
+}
+```
+
+#### 1.8 订单退签接口（针对已付款）
+- URL：`/api/order/refund`
+- 请求方式：POST
+- 传入 JSON（客户端→服务端）：
+```json
+{
+  "telephone": "string",  // 登录用户的手机号
+  "token": "string",      // 登录凭证（身份验证）
+  "orderId": "string"     // 要退签的订单ID
+}
+```
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "退签成功",
+  "data": {
+    "orderId": "string",  // 退签的订单ID
+    "status": "string",   // 订单状态（已退签）
+    "refundTime": "string"// 退签时间（格式：YYYY-MM-DD HH:MM:SS）
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：订单不存在、订单未支付、已过退签时间、token 失效）",
+  "data": null
+}
+```
+
+#### 1.9 删除订单接口（针对未付款）
+- URL：`/api/order/delete`
+- 请求方式：POST
+- 传入 JSON（客户端→服务端）：
+```json
+{
+  "telephone": "string",  // 登录用户的手机号
+  "token": "string",      // 登录凭证（身份验证）
+  "orderId": "string"     // 要删除的订单ID
+}
+```
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "订单删除成功",
+  "data": {
+    "orderId": "string"  // 已删除的订单ID
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：订单不存在、订单已支付、token 失效）",
+  "data": null
+}
+```
+
+#### 1.10 机票改签接口
+- URL：`/api/order/change`
+- 请求方式：POST
+- 传入 JSON（客户端→服务端）：
+```json
+{
+  "telephone": "string",    // 登录用户的手机号
+  "token": "string",        // 登录凭证（身份验证）
+  "orderId": "string",      // 要改签的订单ID
+  "newFlightId": "number"   // 新选择的航班ID
+}
+```
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "改签成功",
+  "data": {
+    "orderId": "string",        // 改签后的订单ID
+    "newFlightNumber": "string" // 新航班号
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：新航班无余票、订单不存在、token 失效）",
+  "data": null
+}
+```
+
+### 2. 管理员相关接口
+#### 2.1 管理员登录接口
+- URL：`/api/admin/login`
+- 请求方式：POST
+- 传入 JSON（客户端→服务端）：
+```json
+{
+  "adminAccount": "string",  // 管理员账号
+  "adminPassword": "string"  // 管理员密码
+}
+```
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "adminAccount": "string", // 登录成功的管理员账号
+    "token": "string"         // 管理员登录凭证
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：管理员账号不存在、密码错误）",
+  "data": null
+}
+```
+
+#### 2.2 管理员注册接口
+- URL：`/api/admin/register`
+- 请求方式：POST
+- 传入 JSON（客户端→服务端）：
+```json
+{
+  "adminAccount": "string",  // 管理员账号
+  "adminPassword": "string", // 管理员密码
+  "adminName": "string"      // 管理员姓名
+}
+```
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "注册成功",
+  "data": {
+    "adminAccount": "string"  // 注册成功的管理员账号
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：管理员账号已被注册）",
+  "data": null
+}
+```
+
+#### 2.3 航班信息增删改接口
+##### 2.3.1 增加航班
+- URL：`/api/admin/flight/add`
+- 请求方式：POST
+- 传入 JSON（客户端→服务端）：
+```json
+{
+  "adminAccount": "string",   // 管理员账号
+  "token": "string",          // 管理员登录凭证
+  "flightNumber": "string",   // 航班号
+  "departureCity": "string",  // 出发城市
+  "arrivalCity": "string",    // 目的城市
+  "date": "string",           // 航班日期（格式：YYYY-MM-DD）
+  "departureTime": "string",  // 起飞时间（格式：HH:MM）
+  "arrivalTime": "string",    // 到达时间（格式：HH:MM）
+  "departureAirport": "string",// 出发机场
+  "arrivalAirport": "string",  // 到达机场
+  "checkinStartTime": "string",// 值机开始时间
+  "checkinEndTime": "string",  // 值机结束时间
+  "price": "number",           // 航班价格
+  "airlineCompany": "string",  // 航空公司
+  "status": "string",          // 航班状态（如：正常）
+  "leftTickets": "number"      // 初始票数
+}
+```
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "航班添加成功",
+  "data": {
+    "flightId": "number",     // 新增航班的ID
+    "flightNumber": "string"  // 新增航班的航班号
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：航班号已存在、token 失效）",
+  "data": null
+}
+```
+
+##### 2.3.2 删除航班
+- URL：`/api/admin/flight/delete`
+- 请求方式：POST
+- 传入 JSON（客户端→服务端）：
+```json
+{
+  "adminAccount": "string",  // 管理员账号
+  "token": "string",         // 管理员登录凭证
+  "flightId": "number"       // 要删除的航班ID
+}
+```
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "航班删除成功",
+  "data": {
+    "flightId": "number"  // 已删除的航班ID
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：航班不存在、航班已关联订单、token 失效）",
+  "data": null
+}
+```
+
+##### 2.3.3 修改航班
+- URL：`/api/admin/flight/update`
+- 请求方式：POST
+- 传入 JSON（客户端→服务端）：
+```json
+{
+  "adminAccount": "string",   // 管理员账号
+  "token": "string",          // 管理员登录凭证
+  "flightId": "number",       // 要修改的航班ID（必传）
+  "flightNumber": "string",   // 航班号（可选，若修改需校验唯一性）
+  "departureCity": "string",  // 出发城市（可选）
+  "arrivalCity": "string",    // 目的城市（可选）
+  "date": "string",           // 航班日期（可选，格式：YYYY-MM-DD）
+  "departureTime": "string",  // 起飞时间（可选，格式：HH:MM）
+  "arrivalTime": "string",    // 到达时间（可选，格式：HH:MM）
+  "price": "number",          // 价格（可选）
+  "status": "string",         // 状态（可选，如：正常→延误）
+  "leftTickets": "number"     // 剩余票数（可选）
+}
+```
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "航班修改成功",
+  "data": {
+    "flightId": "number",     // 修改后的航班ID
+    "flightNumber": "string"  // 修改后的航班号（若未修改则返回原航班号）
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：航班不存在、修改后的航班号已存在、token 失效）",
+  "data": null
+}
+```
+
+#### 2.4 管理员查询航班接口
+- URL：`/api/admin/flight/search`
+- 请求方式：GET
+- 传入参数（URL 拼接）：
+```json
+{
+  "adminAccount": "string",   // 管理员账号
+  "token": "string",          // 管理员登录凭证
+  "flightNumber": "string",   // 航班号（可选，为空则查询所有）
+  "departureCity": "string",  // 出发城市（可选）
+  "arrivalCity": "string",    // 目的城市（可选）
+  "date": "string",           // 航班日期（可选，格式：YYYY-MM-DD）
+  "pageNum": "number",        // 页码（可选，从 1 开始，为空则不分页）
+  "pageSize": "number"        // 每页条数（可选，为空则不分页）
+}
+```
+- URL 示例1：`/api/admin/flight/search?adminAccount=admin&token=xxx&flightNumber=CA1521`
+- URL 示例2：`/api/admin/flight/search?adminAccount=admin&token=xxx&departureCity=北京&date=2025-12-01&pageNum=1&pageSize=20`
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "total": "number",        // 总航班数（分页时返回）
+    "pageNum": "number",      // 当前页码（分页时返回）
+    "pageSize": "number",     // 每页条数（分页时返回）
+    "list": [
+      {
+        "flightId": "number",       // 航班ID
+        "flightNumber": "string",   // 航班号
+        "departureCity": "string",  // 出发城市
+        "arrivalCity": "string",    // 目的城市
+        "date": "string",           // 航班日期（格式：YYYY-MM-DD）
+        "departureTime": "string",  // 起飞时间（格式：HH:MM）
+        "arrivalTime": "string",    // 到达时间（格式：HH:MM）
+        "departureAirport": "string",// 出发机场
+        "arrivalAirport": "string",  // 到达机场
+        "checkinStartTime": "string",// 值机开始时间
+        "checkinEndTime": "string",  // 值机结束时间
+        "price": "number",           // 航班价格
+        "airlineCompany": "string",  // 航空公司
+        "status": "string",          // 航班状态（如：正常、延误）
+        "leftTickets": "number"      // 剩余票数（管理员专属字段）
+      }
+    ]
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：无匹配航班、token 失效）",
+  "data": null
+}
+```
+
+#### 2.5 管理员查看所有客户信息接口
+- URL：`/api/admin/user/all`
+- 请求方式：GET
+- 传入参数（URL 拼接）：
+```json
+{
+  "adminAccount": "string",   // 管理员账号
+  "token": "string",          // 管理员登录凭证
+  "pageNum": "number",        // 页码（必填，从 1 开始）
+  "pageSize": "number"        // 每页条数（必填，如 10、20）
+}
+```
+- URL 示例：`/api/admin/user/all?adminAccount=admin&token=xxx&pageNum=1&pageSize=20`
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "total": "number",        // 总客户数
+    "pageNum": "number",      // 当前页码
+    "pageSize": "number",     // 每页条数
+    "list": [
+      {
+        "telephone": "string",  // 客户手机号
+        "username": "string",   // 客户姓名
+        "registerTime": "string"// 注册时间（格式：YYYY-MM-DD HH:MM:SS）
+      }
+    ]
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：无客户信息、token 失效）",
+  "data": null
+}
+```
+
+#### 2.6 管理员查看所有订单信息接口
+- URL：`/api/admin/order/all`
+- 请求方式：GET
+- 传入参数（URL 拼接）：
+```json
+{
+  "adminAccount": "string",   // 管理员账号
+  "token": "string",          // 管理员登录凭证
+  "status": "string",         // 订单状态（可选，如：待支付、已完成，为空则查询所有）
+  "startDate": "string",      // 订单创建开始日期（可选，格式：YYYY-MM-DD）
+  "endDate": "string",        // 订单创建结束日期（可选，格式：YYYY-MM-DD）
+  "pageNum": "number",        // 页码（必填，从 1 开始）
+  "pageSize": "number"        // 每页条数（必填，如 10、20）
+}
+```
+- URL 示例：`/api/admin/order/all?adminAccount=admin&token=xxx&status=已完成&startDate=2025-01-01&endDate=2025-12-31&pageNum=1&pageSize=20`
+- 成功返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 200,
+  "message": "操作成功",
+  "data": {
+    "total": "number",        // 总订单数
+    "pageNum": "number",      // 当前页码
+    "pageSize": "number",     // 每页条数
+    "list": [
+      {
+        "orderId": "string",        // 订单ID
+        "telephone": "string",      // 下单用户手机号
+        "username": "string",       // 下单用户姓名
+        "flightNumber": "string",   // 航班号
+        "departureCity": "string",  // 出发城市
+        "arrivalCity": "string",    // 目的城市
+        "departureTime": "string",  // 起飞时间
+        "createTime": "string",     // 订单创建时间（格式：YYYY-MM-DD HH:MM:SS）
+        "status": "string",         // 订单状态
+        "passengers": [             // 乘客列表
+          {
+            "name": "string",       // 乘客姓名
+            "idCard": "string"      // 乘客身份证号
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+- 失败返回 JSON（服务端→客户端）：
+```json
+{
+  "code": 500,
+  "message": "失败原因（如：无订单信息、token 失效、日期格式错误）",
+  "data": null
+}
+```
+
+
+
+================================================
+FILE: DBManager.h
+================================================
+#ifndef DBMANAGER_H
+#define DBMANAGER_H
+
+#include <QSqlDatabase>
+#include <QSqlQuery>
+#include <QSqlError>
+#include <QDebug>
+
+// 单例类：整个程序只维护一个数据库连接
+class DBManager {
+public:
+    // 获取唯一实例（单例核心）
+    static DBManager& getInstance() {
+        static DBManager instance; // 静态局部变量，保证只创建一次
+        return instance;
+    }
+
+    // 获取可用的数据库连接
+    QSqlDatabase getConnection() {
+        return m_db;
+    }
+
+private:
+    // 私有构造函数（禁止外部创建对象）
+    DBManager() {
+        // 初始化ODBC连接（替换成你的MySQL信息）
+        m_db = QSqlDatabase::addDatabase("QODBC");
+        m_db.setHostName("127.0.0.1");    // 数据库地址（本机）
+        m_db.setPort(3306);               // MySQL默认端口
+        m_db.setDatabaseName("flight_booking_system"); // 你的数据库名
+        m_db.setUserName("root");         // 你的MySQL用户名
+        m_db.setPassword("159-357/258*cyw"); // 替换成实际密码
+
+        // 测试连接
+        if (!m_db.open()) {
+            qDebug() << "数据库连接失败：" << m_db.lastError().text();
+        } else {
+            qDebug() << "数据库连接成功！";
+        }
+    }
+
+    // 禁止拷贝和赋值（单例类必须）
+    DBManager(const DBManager&) = delete;
+    DBManager& operator=(const DBManager&) = delete;
+
+    QSqlDatabase m_db; // 数据库连接对象
+};
+
+#endif // DBMANAGER_H
+
+
+
+================================================
+FILE: flight.h
+================================================
+#ifndef FLIGHT_H
+#define FLIGHT_H
+
+#include <QObject>
+#include <QDate>
+#include <QTime>
+#include <QString>
+
+class Flight : public QObject
+{
+    Q_OBJECT
+    // 严格对应数据库字段 + API返回字段
+    Q_PROPERTY(int flightId READ flightId WRITE setFlightId)
+    Q_PROPERTY(QString flightNumber READ flightNumber WRITE setFlightNumber)
+    Q_PROPERTY(QString departureCity READ departureCity WRITE setDepartureCity)
+    Q_PROPERTY(QString arrivalCity READ arrivalCity WRITE setArrivalCity)
+    Q_PROPERTY(QDate date READ date WRITE setDate)                // 航班日期（单独字段）
+    Q_PROPERTY(QTime departureTime READ departureTime WRITE setDepartureTime) // 出发时间（仅时分）
+    Q_PROPERTY(QTime arrivalTime READ arrivalTime WRITE setArrivalTime)       // 到达时间（仅时分）
+    Q_PROPERTY(QString departureAirport READ departureAirport WRITE setDepartureAirport)
+    Q_PROPERTY(QString arrivalAirport READ arrivalAirport WRITE setArrivalAirport)
+    Q_PROPERTY(QTime checkinStartTime READ checkinStartTime WRITE setCheckinStartTime)
+    Q_PROPERTY(QTime checkinEndTime READ checkinEndTime WRITE setCheckinEndTime)
+    Q_PROPERTY(int price READ price WRITE setPrice)              // 价格（分，整数）
+    Q_PROPERTY(QString airlineCompany READ airlineCompany WRITE setAirlineCompany)
+    Q_PROPERTY(QString status READ status WRITE setStatus)
+    Q_PROPERTY(int leftTickets READ leftTickets WRITE setLeftTickets)
+
+public:
+    explicit Flight(QObject *parent = nullptr) : QObject(parent) {}
+
+    // Getter方法（严格对应字段名）
+    int flightId() const { return m_flightId; }
+    QString flightNumber() const { return m_flightNumber; }
+    QString departureCity() const { return m_departureCity; }
+    QString arrivalCity() const { return m_arrivalCity; }
+    QDate date() const { return m_date; }
+    QTime departureTime() const { return m_departureTime; }
+    QTime arrivalTime() const { return m_arrivalTime; }
+    QString departureAirport() const { return m_departureAirport; }
+    QString arrivalAirport() const { return m_arrivalAirport; }
+    QTime checkinStartTime() const { return m_checkinStartTime; }
+    QTime checkinEndTime() const { return m_checkinEndTime; }
+    int price() const { return m_price; }
+    QString airlineCompany() const { return m_airlineCompany; }
+    QString status() const { return m_status; }
+    int leftTickets() const { return m_leftTickets; }
+
+    // Setter方法
+    void setFlightId(int flightId) { m_flightId = flightId; }
+    void setFlightNumber(const QString &flightNumber) { m_flightNumber = flightNumber; }
+    void setDepartureCity(const QString &departureCity) { m_departureCity = departureCity; }
+    void setArrivalCity(const QString &arrivalCity) { m_arrivalCity = arrivalCity; }
+    void setDate(const QDate &date) { m_date = date; }
+    void setDepartureTime(const QTime &departureTime) { m_departureTime = departureTime; }
+    void setArrivalTime(const QTime &arrivalTime) { m_arrivalTime = arrivalTime; }
+    void setDepartureAirport(const QString &departureAirport) { m_departureAirport = departureAirport; }
+    void setArrivalAirport(const QString &arrivalAirport) { m_arrivalAirport = arrivalAirport; }
+    void setCheckinStartTime(const QTime &checkinStartTime) { m_checkinStartTime = checkinStartTime; }
+    void setCheckinEndTime(const QTime &checkinEndTime) { m_checkinEndTime = checkinEndTime; }
+    void setPrice(int price) { m_price = price; }
+    void setAirlineCompany(const QString &airlineCompany) { m_airlineCompany = airlineCompany; }
+    void setStatus(const QString &status) { m_status = status; }
+    void setLeftTickets(int leftTickets) { m_leftTickets = leftTickets; }
+
+private:
+    // 成员变量严格对应数据库列名
+    int m_flightId = 0;
+    QString m_flightNumber;
+    QString m_departureCity;
+    QString m_arrivalCity;
+    QDate m_date;
+    QTime m_departureTime;
+    QTime m_arrivalTime;
+    QString m_departureAirport;
+    QString m_arrivalAirport;
+    QTime m_checkinStartTime;
+    QTime m_checkinEndTime;
+    int m_price = 0;          // 单位：分
+    QString m_airlineCompany;
+    QString m_status;
+    int m_leftTickets = 0;
+};
+
+#endif // FLIGHT_H
+
+
+
+================================================
+FILE: FlightDao.h
+================================================
+#ifndef FLIGHTDAO_H
+#define FLIGHTDAO_H
+
+#include "Flight.h"
+#include "DBManager.h"
+#include <QList>
+#include <QSqlQuery>
+#include <QDate>
+#include <QString>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonDocument>
+
+class FlightDao {
+public:
+
+    Flight* getFlightById(int flightId) {
+        QSqlQuery query(DBManager::getInstance().getConnection());
+        query.prepare("SELECT * FROM flight WHERE flight_id = ?");
+        query.addBindValue(flightId);
+
+        if (query.exec() && query.next()) {
+            Flight* flight = new Flight();
+            // 严格映射数据库字段到Flight对象（与queryFlightsWithFilters中的逻辑一致）
+            flight->setFlightId(query.value("flight_id").toInt());
+            flight->setFlightNumber(query.value("flight_number").toString());
+            flight->setDepartureCity(query.value("departure_city").toString());
+            flight->setArrivalCity(query.value("arrival_city").toString());
+            flight->setDate(query.value("date").toDate());
+            flight->setDepartureTime(query.value("departure_time").toTime());
+            flight->setArrivalTime(query.value("arrival_time").toTime());
+            flight->setDepartureAirport(query.value("departure_airport").toString());
+            flight->setArrivalAirport(query.value("arrival_airport").toString());
+            flight->setCheckinStartTime(query.value("checkin_start_time").toTime());
+            flight->setCheckinEndTime(query.value("checkin_end_time").toTime());
+            flight->setPrice(query.value("price").toInt());
+            flight->setAirlineCompany(query.value("airline_company").toString());
+            flight->setStatus(query.value("status").toString());
+            flight->setLeftTickets(query.value("left_tickets").toInt());
+            return flight;
+        }
+        return nullptr; // 未找到航班时返回空
+    }
+
+    // ========== 新增：余票扣减（下单/改签时使用） ==========
+    bool reduceLeftTickets(int flightId, int num) {
+        if (num <= 0) {
+            qDebug() << "扣减余票数量必须为正数";
+            return false;
+        }
+
+        QSqlQuery query(DBManager::getInstance().getConnection());
+        // 先查询余票，避免超卖
+        query.prepare("SELECT left_tickets FROM flight WHERE flight_id = ?");
+        query.addBindValue(flightId);
+        if (!query.exec() || !query.next()) {
+            qDebug() << "查询航班余票失败：" << query.lastError().text();
+            return false;
+        }
+
+        int leftTickets = query.value("left_tickets").toInt();
+        if (leftTickets < num) {
+            qDebug() << "余票不足：当前" << leftTickets << "张，需扣减" << num << "张";
+            return false;
+        }
+
+        // 执行扣减
+        query.prepare("UPDATE flight SET left_tickets = left_tickets - ? WHERE flight_id = ?");
+        query.addBindValue(num);
+        query.addBindValue(flightId);
+        if (query.exec()) {
+            return true;
+        } else {
+            qDebug() << "扣减余票失败：" << query.lastError().text();
+            return false;
+        }
+    }
+
+    // ========== 新增：余票恢复（退签/改签时使用） ==========
+    bool addLeftTickets(int flightId, int num) {
+        if (num <= 0) {
+            qDebug() << "恢复余票数量必须为正数";
+            return false;
+        }
+
+        QSqlQuery query(DBManager::getInstance().getConnection());
+        // 先校验航班是否存在
+        query.prepare("SELECT flight_id FROM flight WHERE flight_id = ?");
+        query.addBindValue(flightId);
+        if (!query.exec() || !query.next()) {
+            qDebug() << "航班不存在：flightId=" << flightId;
+            return false;
+        }
+
+        // 执行恢复
+        query.prepare("UPDATE flight SET left_tickets = left_tickets + ? WHERE flight_id = ?");
+        query.addBindValue(num);
+        query.addBindValue(flightId);
+        if (query.exec()) {
+            return true;
+        } else {
+            qDebug() << "恢复余票失败：" << query.lastError().text();
+            return false;
+        }
+    }
+
+    // 核心：带筛选+分页的航班查询（适配API参数）
+    QList<Flight*> queryFlightsWithFilters(
+        const QString& departureCity,  // 出发城市（可选）
+        const QString& arrivalCity,    // 目的城市（可选）
+        const QDate& date,             // 航班日期（可选）
+        const QString& airlineCompany, // 航空公司（可选）
+        int minPrice,                  // 最低价格（分，可选）
+        int maxPrice,                  // 最高价格（分，可选）
+        int pageNum,                   // 页码（必填）
+        int pageSize                   // 每页条数（必填）
+        ) {
+        QList<Flight*> flightList;
+        QSqlQuery query(DBManager::getInstance().getConnection());
+        QString sql = "SELECT * FROM flight WHERE 1=1";
+        QList<QVariant> bindValues;
+
+        // 1. 出发城市筛选
+        if (!departureCity.isEmpty()) {
+            sql += " AND departure_city = ?";
+            bindValues.append(departureCity);
+        }
+
+        // 2. 目的城市筛选
+        if (!arrivalCity.isEmpty()) {
+            sql += " AND arrival_city = ?";
+            bindValues.append(arrivalCity);
+        }
+
+        // 3. 航班日期筛选（数据库中是date字段，单独日期）
+        if (date.isValid()) {
+            sql += " AND date = ?";
+            bindValues.append(date);
+        }
+
+        // 4. 航空公司筛选
+        if (!airlineCompany.isEmpty()) {
+            sql += " AND airline_company = ?";
+            bindValues.append(airlineCompany);
+        }
+
+        // 5. 价格区间筛选（分）
+        if (minPrice >= 0) {
+            sql += " AND price >= ?";
+            bindValues.append(minPrice);
+        }
+        if (maxPrice > 0) {
+            sql += " AND price <= ?";
+            bindValues.append(maxPrice);
+        }
+
+        // 6. 分页处理（MySQL LIMIT 偏移量, 条数）
+        int offset = (pageNum - 1) * pageSize;
+        sql += " LIMIT ? OFFSET ?";
+        bindValues.append(pageSize);
+        bindValues.append(offset);
+
+        // 绑定参数并执行查询
+        query.prepare(sql);
+        for (int i = 0; i < bindValues.size(); ++i) {
+            query.bindValue(i, bindValues[i]);
+        }
+
+        if (query.exec()) {
+            while (query.next()) {
+                Flight* flight = new Flight();
+                // 严格映射数据库字段到Flight对象
+                flight->setFlightId(query.value("flight_id").toInt());
+                flight->setFlightNumber(query.value("flight_number").toString());
+                flight->setDepartureCity(query.value("departure_city").toString());
+                flight->setArrivalCity(query.value("arrival_city").toString());
+                flight->setDate(query.value("date").toDate());
+                flight->setDepartureTime(query.value("departure_time").toTime());
+                flight->setArrivalTime(query.value("arrival_time").toTime());
+                flight->setDepartureAirport(query.value("departure_airport").toString());
+                flight->setArrivalAirport(query.value("arrival_airport").toString());
+                flight->setCheckinStartTime(query.value("checkin_start_time").toTime());
+                flight->setCheckinEndTime(query.value("checkin_end_time").toTime());
+                flight->setPrice(query.value("price").toInt());
+                flight->setAirlineCompany(query.value("airline_company").toString());
+                flight->setStatus(query.value("status").toString());
+                flight->setLeftTickets(query.value("left_tickets").toInt());
+                flightList.append(flight);
+            }
+        } else {
+            qCritical() << "航班查询失败：" << query.lastError().text();
+        }
+
+        return flightList;
+    }
+
+    // 获取符合条件的航班总数（用于分页）
+    int getFlightCountWithFilters(
+        const QString& departureCity,
+        const QString& arrivalCity,
+        const QDate& date,
+        const QString& airlineCompany,
+        int minPrice,
+        int maxPrice
+        ) {
+        QSqlQuery query(DBManager::getInstance().getConnection());
+        QString sql = "SELECT COUNT(*) FROM flight WHERE 1=1";
+        QList<QVariant> bindValues;
+
+        // 复用筛选条件（和查询方法一致）
+        if (!departureCity.isEmpty()) {
+            sql += " AND departure_city = ?";
+            bindValues.append(departureCity);
+        }
+        if (!arrivalCity.isEmpty()) {
+            sql += " AND arrival_city = ?";
+            bindValues.append(arrivalCity);
+        }
+        if (date.isValid()) {
+            sql += " AND date = ?";
+            bindValues.append(date);
+        }
+        if (!airlineCompany.isEmpty()) {
+            sql += " AND airline_company = ?";
+            bindValues.append(airlineCompany);
+        }
+        if (minPrice >= 0) {
+            sql += " AND price >= ?";
+            bindValues.append(minPrice);
+        }
+        if (maxPrice > 0) {
+            sql += " AND price <= ?";
+            bindValues.append(maxPrice);
+        }
+
+        query.prepare(sql);
+        for (int i = 0; i < bindValues.size(); ++i) {
+            query.bindValue(i, bindValues[i]);
+        }
+
+        if (query.exec() && query.next()) {
+            return query.value(0).toInt();
+        } else {
+            qCritical() << "查询航班总数失败：" << query.lastError().text();
+            return 0;
+        }
+    }
+
+    // 转换为API标准JSON格式（核心：完全匹配API返回结构）
+    QJsonObject flightsToApiJson(QList<Flight*> flights, int totalCount, int pageNum, int pageSize) {
+        QJsonObject response;
+        QJsonObject dataObj;
+        QJsonArray listArray;
+
+        // 无匹配航班时返回失败JSON
+        if (flights.isEmpty()) {
+            response["code"] = 500;
+            response["message"] = "无匹配航班";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+
+        // 有数据时构造成功JSON
+        // 1. 构造航班列表数组
+        for (Flight* flight : flights) {
+            QJsonObject flightObj;
+            flightObj["flightId"] = flight->flightId();
+            flightObj["flightNumber"] = flight->flightNumber();
+            flightObj["departureCity"] = flight->departureCity();
+            flightObj["arrivalCity"] = flight->arrivalCity();
+            flightObj["departureTime"] = flight->departureTime().toString("HH:mm"); // 仅时分
+            flightObj["arrivalTime"] = flight->arrivalTime().toString("HH:mm");     // 仅时分
+            flightObj["departureAirport"] = flight->departureAirport();
+            flightObj["arrivalAirport"] = flight->arrivalAirport();
+            flightObj["checkinStartTime"] = flight->checkinStartTime().toString("HH:mm");
+            flightObj["checkinEndTime"] = flight->checkinEndTime().toString("HH:mm");
+            flightObj["price"] = flight->price(); // 分，整数
+            flightObj["airlineCompany"] = flight->airlineCompany();
+            flightObj["status"] = flight->status();
+            flightObj["leftTickets"] = flight->leftTickets();
+            listArray.append(flightObj);
+        }
+
+        // 2. 构造data对象（匹配API的data结构）
+        dataObj["total"] = totalCount;
+        dataObj["pageNum"] = pageNum;
+        dataObj["pageSize"] = pageSize;
+        dataObj["list"] = listArray;
+
+        // 3. 构造最终响应
+        response["code"] = 200;
+        response["message"] = "查询成功";
+        response["data"] = dataObj;
+
+        return response;
+    }
+
+    // 释放航班列表内存（避免内存泄漏）
+    void releaseFlightList(QList<Flight*>& flightList) {
+        for (Flight* flight : flightList) {
+            delete flight;
+        }
+        flightList.clear();
+    }
+};
+
+#endif // FLIGHTDAO_H
+
+
+
+================================================
+FILE: HttpServer.h
+================================================
+#ifndef HTTPSERVER_H
+#define HTTPSERVER_H
+
+#include <QObject>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QDateTime>
+#include <QUrlQuery>
+#include <QStringList>
+#include <QNetworkRequest>
+
+#include "UserDao.h"
+#include "FlightDao.h"
+#include "OrderInfoDao.h"
+#include "OrderChangeDao.h"
+#include "AdminService.h"
+#include "TokenTool.h"
+#include "DBManager.h"
+
+class HttpServer : public QTcpServer
+{
+    Q_OBJECT
+public:
+    explicit HttpServer(QObject *parent = nullptr) : QTcpServer(parent)
+    {
+        DBManager::getInstance();
+    }
+
+    bool startServer(quint16 port)
+    {
+        if (listen(QHostAddress::Any, port)) {
+            qDebug() << "服务器启动成功，端口：" << port;
+            return true;
+        } else {
+            qDebug() << "服务器启动失败：" << errorString();
+            return false;
+        }
+    }
+
+protected:
+    void incomingConnection(qintptr socketDescriptor) override
+    {
+        QTcpSocket *socket = new QTcpSocket(this);
+        socket->setSocketDescriptor(socketDescriptor);
+        connect(socket, &QTcpSocket::readyRead, this, [this, socket]() {
+            handleClientRequest(socket);
+        });
+        connect(socket, &QTcpSocket::disconnected, socket, &QTcpSocket::deleteLater);
+    }
+
+private slots:
+    void handleClientRequest(QTcpSocket *socket)
+    {
+        // ================ [新增：函数入口监控] ================
+        qDebug() << "\n[HTTP-LOG] >>> 进入 handleClientRequest 函数";
+
+        QByteArray data = socket->readAll();
+        QString request = QString::fromUtf8(data);
+        QStringList lines = request.split("\r\n");
+        if (lines.isEmpty()) {
+            qDebug() << "[HTTP-LOG] 错误：请求数据为空";
+            sendResponse(socket, 400, "Bad Request", QJsonObject());
+            return;
+        }
+
+        QStringList requestLine = lines[0].split(" ");
+        if (requestLine.size() != 3) {
+            qDebug() << "[HTTP-LOG] 错误：请求行格式非法 ->" << lines[0];
+            sendResponse(socket, 400, "Bad Request", QJsonObject());
+            return;
+        }
+
+        QString method = requestLine[0];
+        QString path = requestLine[1];
+        QString version = requestLine[2];
+
+        QUrlQuery query;
+        int queryIndex = path.indexOf('?');
+        QString pathWithoutQuery = path;
+        if (queryIndex != -1) {
+            query = QUrlQuery(path.mid(queryIndex + 1));
+            pathWithoutQuery = path.left(queryIndex);
+        }
+
+        QJsonObject requestBody;
+        int bodyIndex = request.indexOf("\r\n\r\n");
+        if (bodyIndex != -1 && (method == "POST" || method == "PUT" || method == "DELETE")) {
+            QByteArray bodyData = data.mid(bodyIndex + 4);
+            QJsonDocument doc = QJsonDocument::fromJson(bodyData);
+            if (!doc.isNull() && doc.isObject()) {
+                requestBody = doc.object();
+            }
+        }
+
+        qDebug() << "-------------------------------------";
+        qDebug() << "【收到前端请求】" << QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+        qDebug() << "请求方式：" << method;
+        qDebug() << "请求接口：" << pathWithoutQuery;
+        qDebug() << "POST请求体：" << requestBody;
+
+        QString authorizationHeader = "";
+        for (const QString& line : lines) {
+            if (line.startsWith("Authorization:", Qt::CaseInsensitive)) {
+                authorizationHeader = line.section(':', 1).trimmed();
+                qDebug() << "[HTTP-LOG] 提取到 Authorization Header:" << authorizationHeader;
+                break;
+            }
+        }
+
+        // ================ [修复：清洗双重 Bearer 前缀] ================
+        while (authorizationHeader.startsWith("Bearer ", Qt::CaseInsensitive)) {
+            authorizationHeader = authorizationHeader.mid(7).trimmed();
+        }
+        // ===========================================================
+
+        QJsonObject responseObj;
+        int statusCode = 200;
+        QString statusText = "OK";
+
+        // ========== 1. 用户主要功能模块 ==========
+
+        if (method == "POST" && pathWithoutQuery == "/api/user/login") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 用户登录";
+            QString telephone = requestBody["telephone"].toString();
+            QString password = requestBody["password"].toString();
+            UserDao dao;
+            responseObj = dao.login(telephone, password);
+        }
+        else if (method == "POST" && pathWithoutQuery == "/api/user/register") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 用户注册";
+            QString telephone = requestBody["telephone"].toString();
+            QString password = requestBody["password"].toString();
+            QString username = requestBody["username"].toString();
+            UserDao dao;
+            responseObj = dao.registerUser(telephone, password, username);
+        }
+        else if (method == "GET" && pathWithoutQuery == "/api/flight/search") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 航班查询";
+            QString departureCity = query.queryItemValue("departureCity");
+            QString arrivalCity = query.queryItemValue("arrivalCity");
+            QDate date = QDate::fromString(query.queryItemValue("date"), "yyyy-MM-dd");
+            QString airlineCompany = query.queryItemValue("airlineCompany");
+
+            bool minPriceOk;
+            int minPrice = query.queryItemValue("minPrice").toInt(&minPriceOk);
+            if (!minPriceOk) minPrice = -1;
+
+            bool maxPriceOk;
+            int maxPrice = query.queryItemValue("maxPrice").toInt(&maxPriceOk);
+            if (!maxPriceOk) maxPrice = -1;
+
+            bool pageNumOk;
+            int pageNum = query.queryItemValue("pageNum").toInt(&pageNumOk);
+            if (!pageNumOk) pageNum = 1;
+
+            bool pageSizeOk;
+            int pageSize = query.queryItemValue("pageSize").toInt(&pageSizeOk);
+            if (!pageSizeOk) pageSize = 10;
+
+            FlightDao dao;
+            QList<Flight*> flights = dao.queryFlightsWithFilters(departureCity, arrivalCity, date, airlineCompany, minPrice, maxPrice, pageNum, pageSize);
+            int totalCount = dao.getFlightCountWithFilters(departureCity, arrivalCity, date, airlineCompany, minPrice, maxPrice);
+            responseObj = dao.flightsToApiJson(flights, totalCount, pageNum, pageSize);
+            qDeleteAll(flights);
+        }
+        else if (method == "POST" && pathWithoutQuery == "/api/order/book") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 机票预订";
+            int flightId = requestBody["flightId"].toInt();
+            QJsonArray passengersArray = requestBody["passengers"].toArray();
+            QList<QPair<QString, QString>> passengers;
+            for (const QJsonValue& val : passengersArray) {
+                QJsonObject pObj = val.toObject();
+                passengers.append({pObj["name"].toString(), pObj["idCard"].toString()});
+            }
+            OrderInfoDao dao;
+            responseObj = dao.bookOrder(authorizationHeader, flightId, passengers);
+        }
+        else if (method == "POST" && pathWithoutQuery == "/api/order/pay") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 订单支付";
+            QString orderId = requestBody["orderId"].toString();
+            OrderInfoDao dao;
+            responseObj = dao.payOrder(authorizationHeader, orderId);
+        }
+        else if (method == "GET" && pathWithoutQuery == "/api/order/query") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 个人订单查询";
+            QString status = query.queryItemValue("status");
+            OrderInfoDao dao;
+            responseObj = dao.queryOrderByUserId(authorizationHeader, status);
+        }
+        else if (method == "POST" && pathWithoutQuery == "/api/order/change") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 订单改签 (POST)";
+
+            // 1. 验证Token
+            QString token = authorizationHeader;
+            int userId = TokenTool::verifyToken(token);
+
+            if (userId == -1) {
+                qDebug() << "[HTTP-LOG] Token验证失败";
+                responseObj["code"] = 401;
+                responseObj["message"] = "Token无效或已过期";
+                responseObj["data"] = QJsonValue::Null;
+            } else {
+                // 2. 解析参数
+                QString orderId = requestBody["orderId"].toString();
+                int newFlightId = requestBody["newFlightId"].toInt();
+
+                if (orderId.isEmpty() || newFlightId <= 0) {
+                    responseObj["code"] = 400;
+                    responseObj["message"] = "参数错误: orderId和newFlightId不能为空";
+                    responseObj["data"] = QJsonValue::Null;
+                } else {
+                    qDebug() << "[HTTP-LOG] 改签请求 - userId:" << userId
+                             << "orderId:" << orderId
+                             << "newFlightId:" << newFlightId;
+
+                    // 3. 直接调用OrderChangeDao
+                    OrderChangeDao dao;
+                    responseObj = dao.changeOrder(orderId, newFlightId);
+
+                    qDebug() << "[HTTP-LOG] 改签响应:" << QJsonDocument(responseObj).toJson();
+                }
+            }
+        }
+        else if ((method == "PUT" || method == "POST") && pathWithoutQuery == "/api/order/refund") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 订单退签";
+            QString orderId = requestBody["orderId"].toString();
+            OrderInfoDao dao;
+            responseObj = dao.refundOrder(authorizationHeader, orderId);
+        }
+        else if ((method == "DELETE" || method == "POST") && pathWithoutQuery == "/api/order/delete") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 删除订单";
+            QString orderId = requestBody["orderId"].toString();
+            if (orderId.isEmpty()) {
+                responseObj["code"] = 400;
+                responseObj["message"] = "缺失订单ID参数";
+            } else {
+                OrderInfoDao dao;
+                responseObj = dao.deleteOrder(authorizationHeader, orderId);
+            }
+        }
+        else if (method == "GET" && pathWithoutQuery == "/api/user/info/get") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 获取用户信息";
+            UserDao dao;
+            responseObj = dao.getUserInfoByToken(authorizationHeader);
+        }
+        else if ((method == "PUT" || method == "POST") && pathWithoutQuery == "/api/user/info/update") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 修改用户信息/充值";
+            QString newUsername = requestBody["username"].toString();
+            QString oldPassword = requestBody["oldPassword"].toString();
+            QString newPassword = requestBody["password"].toString();
+            int balance = requestBody.contains("balance") ? requestBody["balance"].toInt() : -1;
+            UserDao dao;
+            responseObj = dao.updateUserInfoApi(authorizationHeader, newUsername, oldPassword, newPassword, balance);
+        }
+
+        // ========== 2. 管理员主要功能模块 ==========
+
+        else if (method == "POST" && pathWithoutQuery == "/api/admin/login") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 管理员登录";
+            QString account = requestBody["account"].toString();
+            QString pwd = requestBody["password"].toString();
+            responseObj = AdminService::login(account, pwd);
+        }
+        else if (method == "GET" && pathWithoutQuery == "/api/admin/info") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 获取管理员信息";
+            QNetworkRequest req;
+            req.setRawHeader("Authorization", authorizationHeader.toUtf8());
+            responseObj = AdminService::getAdminInfo(req);
+        }
+        else if (method == "POST" && pathWithoutQuery == "/api/admin/flight/add") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 管理员添加航班";
+            int adminId = TokenTool::verifyToken(authorizationHeader);
+            if (adminId == -1) {
+                responseObj["code"] = 500;
+                responseObj["message"] = "管理员Token无效或已过期";
+            } else {
+                responseObj = AdminService::addFlight(requestBody);
+            }
+        }
+        else if (method == "POST" && pathWithoutQuery == "/api/admin/flight/delete") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 管理员删除航班";
+            int adminId = TokenTool::verifyToken(authorizationHeader);
+            if (adminId == -1) {
+                responseObj["code"] = 500;
+                responseObj["message"] = "管理员Token无效或已过期";
+            } else {
+                int flightId = requestBody["flightId"].toInt();
+                responseObj = AdminService::deleteFlight(flightId);
+            }
+        }
+        else if (method == "POST" && pathWithoutQuery == "/api/admin/flight/update") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 管理员更新航班";
+            int adminId = TokenTool::verifyToken(authorizationHeader);
+            if (adminId == -1) {
+                responseObj["code"] = 500;
+                responseObj["message"] = "管理员Token无效或已过期";
+            } else {
+                responseObj = AdminService::updateFlight(requestBody);
+            }
+        }
+        else if (method == "GET" && pathWithoutQuery == "/api/admin/flight/search") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 管理员查询航班";
+            int adminId = TokenTool::verifyToken(authorizationHeader);
+            if (adminId == -1) {
+                responseObj["code"] = 500;
+                responseObj["message"] = "管理员Token无效或已过期";
+            } else {
+                QJsonObject params;
+                params["flightNumber"] = query.queryItemValue("flightNumber");
+                params["departureCity"] = query.queryItemValue("departureCity");
+                params["arrivalCity"] = query.queryItemValue("arrivalCity");
+                params["date"] = query.queryItemValue("date");
+                bool pNOk, pSOk;
+                params["pageNum"] = query.queryItemValue("pageNum").toInt(&pNOk) ? query.queryItemValue("pageNum").toInt() : 1;
+                params["pageSize"] = query.queryItemValue("pageSize").toInt(&pSOk) ? query.queryItemValue("pageSize").toInt() : 20;
+
+                FlightDao dao;
+                QList<Flight*> flights = dao.queryFlightsWithFilters(params["departureCity"].toString(), params["arrivalCity"].toString(), QDate::fromString(params["date"].toString(), "yyyy-MM-dd"), "", -1, -1, params["pageNum"].toInt(), params["pageSize"].toInt());
+                int totalCount = dao.getFlightCountWithFilters(params["departureCity"].toString(), params["arrivalCity"].toString(), QDate::fromString(params["date"].toString(), "yyyy-MM-dd"), "", -1, -1);
+                responseObj = dao.flightsToApiJson(flights, totalCount, params["pageNum"].toInt(), params["pageSize"].toInt());
+                qDeleteAll(flights);
+            }
+        }
+        else if (method == "GET" && pathWithoutQuery == "/api/admin/user/all") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 管理员查看所有客户";
+
+            // 1. 处理 Token
+            QString pureToken = authorizationHeader;
+            while (pureToken.startsWith("Bearer ", Qt::CaseInsensitive)) {
+                pureToken = pureToken.mid(7).trimmed();
+            }
+
+            int adminId = TokenTool::verifyToken(pureToken);
+
+            if (adminId == -1) {
+                qDebug() << "[HTTP-LOG] 校验失败: 管理员Token无效 ->" << pureToken;
+                responseObj["code"] = 500;
+                responseObj["message"] = "管理员Token无效";
+                responseObj["data"] = QJsonValue::Null;
+            } else {
+                // 2. 准备查询参数 (修正：增加 userId 的提取)
+                QJsonObject params;
+
+                // --- 新增：从 URL Query 提取 userId ---
+                if (query.hasQueryItem("userId")) {
+                    params["userId"] = query.queryItemValue("userId");
+                }
+
+                params["telephone"] = query.queryItemValue("telephone");
+                params["username"] = query.queryItemValue("username");
+
+                // 将 Query 里的字符串转为数字
+                params["pageNum"] = query.queryItemValue("pageNum").isEmpty() ? 1 : query.queryItemValue("pageNum").toInt();
+                params["pageSize"] = query.queryItemValue("pageSize").isEmpty() ? 20 : query.queryItemValue("pageSize").toInt();
+
+                // 3. 调用 Service
+                responseObj = AdminService::queryAllUsers(params);
+            }
+        }
+        else if (method == "GET" && pathWithoutQuery == "/api/admin/order/all") {
+            qDebug() << "[HTTP-LOG] 匹配路由: 管理员查看所有订单";
+            if (TokenTool::verifyToken(authorizationHeader) == -1) {
+                responseObj["code"] = 500;
+                responseObj["message"] = "管理员Token无效";
+            } else {
+                QJsonObject params;
+                params["orderId"] = query.queryItemValue("orderId");
+                params["status"] = query.queryItemValue("status");
+
+                // ===== 确保提取telephone参数 =====
+                QString telephone = query.queryItemValue("telephone");
+                qDebug() << "[HTTP-LOG] 从URL提取的电话参数: " << telephone;
+                params["telephone"] = telephone;
+                // =================================
+
+                params["pageNum"] = query.queryItemValue("pageNum").toInt() > 0 ?
+                                        query.queryItemValue("pageNum").toInt() : 1;
+                params["pageSize"] = query.queryItemValue("pageSize").toInt() > 0 ?
+                                         query.queryItemValue("pageSize").toInt() : 20;
+
+                qDebug() << "[HTTP-LOG] 传递给Service的完整参数: " << params;
+
+                responseObj = AdminService::queryAllOrders(params);
+            }
+        }
+        else {
+            qDebug() << "[HTTP-LOG] 未匹配路由:" << pathWithoutQuery;
+            statusCode = 404;
+            statusText = "Not Found";
+            responseObj["code"] = 404;
+            responseObj["message"] = "接口不存在";
+        }
+
+        qDebug() << "[HTTP-LOG] 即将发送响应, Code:" << statusCode << "Body:" << QJsonDocument(responseObj).toJson(QJsonDocument::Compact);
+        sendResponse(socket, statusCode, statusText, responseObj);
+    }
+
+private:
+    void sendResponse(QTcpSocket *socket, int statusCode, const QString &statusText, const QJsonObject &responseObj)
+    {
+        QJsonDocument doc(responseObj);
+        QByteArray jsonData = doc.toJson(QJsonDocument::Compact);
+
+        QString response = QString("HTTP/1.1 %1 %2\r\n").arg(statusCode).arg(statusText);
+        response += "Content-Type: application/json; charset=utf-8\r\n";
+        response += QString("Content-Length: %1\r\n").arg(jsonData.size());
+        response += "Connection: close\r\n\r\n";
+        response += QString::fromUtf8(jsonData);
+
+        socket->write(response.toUtf8());
+        socket->flush();
+        socket->disconnectFromHost();
+        qDebug() << "[HTTP-LOG] <<< 响应已发送，连接关闭\n";
+    }
+};
+
+#endif // HTTPSERVER_H
+
+
+
+================================================
+FILE: main.cpp
+================================================
+#include <QCoreApplication>
+#include <QDebug>
+#include <QThread>
+#include <QJsonObject>
+#include <QJsonDocument>
+
+// 引入HTTP服务器头文件
+#include "HttpServer.h"
+// 引入数据库管理类
+#include "DBManager.h"
+
+int main(int argc, char *argv[])
+{
+    // 1. 初始化Qt核心应用程序
+    QCoreApplication a(argc, argv);
+
+    // 2. 初始化数据库连接（前置操作）
+    qDebug() << "===== 初始化数据库连接 =====";
+    DBManager& dbManager = DBManager::getInstance();
+    if (!dbManager.getConnection().isOpen()) {
+        qCritical() << "数据库连接失败：" << dbManager.getConnection().lastError().text();
+        return -1;
+    }
+    qDebug() << "数据库连接成功！";
+
+
+    // 4. 创建并启动HTTP服务器
+    qDebug() << "\n===== 启动HTTP服务器 =====";
+    HttpServer server;
+    quint16 port = 8080;
+
+    if (server.startServer(port)) {
+        qDebug() << QString("HTTP服务器启动成功，监听端口：%1").arg(port);
+        qDebug() << "测试地址（本机）：http://localhost:" << port;
+        qDebug() << "测试地址（局域网）：http://172.17.39.75:" << port;
+        qDebug() << "按 Ctrl+C 停止服务器...";
+    } else {
+        qCritical() << "HTTP服务器启动失败！";
+        return -1;
+    }
+
+    // 5. 运行Qt事件循环
+    int exitCode = a.exec();
+
+    // 6. 清理资源
+    qDebug() << "\n===== 停止服务器 =====";
+    dbManager.getConnection().close();
+    qDebug() << "服务器已停止，数据库连接已关闭";
+
+    return exitCode;
+}
+
+
+
+================================================
+FILE: Orderchange.h
+================================================
+#ifndef ORDERCHANGE_H
+#define ORDERCHANGE_H
+#include <QObject>
+#include <QString>
+#include <QDateTime>
+
+class OrderChange : public QObject
+{
+    Q_OBJECT
+    // 严格对应order_change表字段 + API改签返回字段
+    Q_PROPERTY(int changeId READ changeId WRITE setChangeId)             // 改签记录ID（PK）
+    Q_PROPERTY(QString orderId READ orderId WRITE setOrderId)           // 关联订单ID（外键）
+    Q_PROPERTY(int oldFlightId READ oldFlightId WRITE setOldFlightId)   // 原航班ID
+    Q_PROPERTY(int newFlightId READ newFlightId WRITE setNewFlightId)   // 新航班ID
+    Q_PROPERTY(int priceDifference READ priceDifference WRITE setPriceDifference) // 差价（分）
+    Q_PROPERTY(QDateTime changeTime READ changeTime WRITE setChangeTime) // 改签时间
+
+public:
+    explicit OrderChange(QObject *parent = nullptr) : QObject(parent),
+        m_changeId(0), m_oldFlightId(0), m_newFlightId(0), m_priceDifference(0) {}
+
+    // Getter
+    int changeId() const { return m_changeId; }
+    QString orderId() const { return m_orderId; }
+    int oldFlightId() const { return m_oldFlightId; }
+    int newFlightId() const { return m_newFlightId; }
+    int priceDifference() const { return m_priceDifference; }
+    QDateTime changeTime() const { return m_changeTime; }
+
+    // Setter
+    void setChangeId(int changeId) { m_changeId = changeId; }
+    void setOrderId(const QString &orderId) { m_orderId = orderId; }
+    void setOldFlightId(int oldFlightId) { m_oldFlightId = oldFlightId; }
+    void setNewFlightId(int newFlightId) { m_newFlightId = newFlightId; }
+    void setPriceDifference(int priceDifference) { m_priceDifference = priceDifference; }
+    void setChangeTime(const QDateTime &changeTime) { m_changeTime = changeTime; }
+
+private:
+    int m_changeId;             // 改签记录自增ID
+    QString m_orderId;          // 关联订单ID
+    int m_oldFlightId;          // 原航班ID
+    int m_newFlightId;          // 新航班ID
+    int m_priceDifference;      // 差价（分：正数补款，负数退款）
+    QDateTime m_changeTime;     // 改签时间
+};
+
+#endif // ORDERCHANGE_H
+
+
+
+================================================
+FILE: OrderChangeDao.h
+================================================
+#ifndef ORDERCHANGEDAO_H
+#define ORDERCHANGEDAO_H
+
+#include "DBManager.h"
+#include "OrderChange.h"
+#include "OrderInfoDao.h"
+#include "FlightDao.h"
+#include "PassengerDao.h"
+#include <QSqlQuery>
+#include <QDebug>
+#include <QJsonObject>
+#include <QJsonDocument>  // 新增
+#include <QDateTime>      // 新增
+
+class OrderChangeDao {
+public:
+    // 1.3.4 改签
+    QJsonObject changeOrder(const QString& orderId, int newFlightId) {
+        QJsonObject response;
+
+        // 获取数据库连接
+        QSqlDatabase db = DBManager::getInstance().getConnection();
+        if (!db.isOpen()) {
+            response["code"] = 500;
+            response["message"] = "数据库连接失败";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+
+        // 开始事务
+        if (!db.transaction()) {
+            response["code"] = 500;
+            response["message"] = "事务启动失败";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+
+        try {
+            // 1. 校验原订单
+            QSqlQuery query(db);
+            query.prepare("SELECT flight_id, user_id, total_price, status FROM order_info WHERE order_id = ?");
+            query.addBindValue(orderId);
+
+            if (!query.exec()) {
+                throw QString("查询订单失败: ") + query.lastError().text();
+            }
+
+            if (!query.next()) {
+                throw QString("订单不存在或未支付");
+            }
+
+            int oldFlightId = query.value("flight_id").toInt();
+            int userId = query.value("user_id").toInt();
+            int oldTotalPrice = query.value("total_price").toInt();
+            QString orderStatus = query.value("status").toString();
+
+            // 检查订单状态
+            if (orderStatus != "已支付") {
+                throw QString("仅已支付的订单可以改签");
+            }
+
+            // 2. 校验新航班
+            FlightDao flightDao;
+            Flight* newFlight = flightDao.getFlightById(newFlightId);
+            if (!newFlight) {
+                throw QString("目标航班不存在");
+            }
+
+            // 3. 获取乘客数量
+            PassengerDao passengerDao;
+            int passengerCount = passengerDao.getPassengerCountByOrderId(orderId);
+            if (passengerCount <= 0) {
+                throw QString("订单没有乘客信息");
+            }
+
+            if (newFlight->leftTickets() < passengerCount) {
+                delete newFlight;
+                throw QString("目标航班余票不足");
+            }
+
+            // 4. 计算差价
+            int newUnitPrice = newFlight->price();
+            int newTotalPrice = newUnitPrice * passengerCount;
+            int priceDifference = newTotalPrice - oldTotalPrice;
+
+            // 5. 原航班恢复余票
+            if (!flightDao.addLeftTickets(oldFlightId, passengerCount)) {
+                throw QString("原航班余票恢复失败");
+            }
+
+            // 6. 新航班扣减余票
+            if (!flightDao.reduceLeftTickets(newFlightId, passengerCount)) {
+                throw QString("新航班余票扣减失败");
+            }
+
+            // 7. 更新订单信息
+            query.prepare(R"(
+                UPDATE order_info
+                SET flight_id = ?, total_price = ?, status = '改签完成'
+                WHERE order_id = ?
+            )");
+            query.addBindValue(newFlightId);
+            query.addBindValue(newTotalPrice);
+            query.addBindValue(orderId);
+
+            if (!query.exec()) {
+                throw QString("更新订单失败: ") + query.lastError().text();
+            }
+
+            // 8. 记录改签历史
+            query.prepare(R"(
+                INSERT INTO order_change
+                (order_id, old_flight_id, new_flight_id, price_difference, change_time)
+                VALUES (?, ?, ?, ?, ?)
+            )");
+            query.addBindValue(orderId);
+            query.addBindValue(oldFlightId);
+            query.addBindValue(newFlightId);
+            query.addBindValue(priceDifference);
+            query.addBindValue(QDateTime::currentDateTime());
+
+            if (!query.exec()) {
+                throw QString("记录改签历史失败: ") + query.lastError().text();
+            }
+
+            // 提交事务
+            if (!db.commit()) {
+                throw QString("事务提交失败");
+            }
+
+            // 9. 构建返回数据
+            QJsonObject data;
+            data["orderId"] = orderId;
+            data["status"] = "改签完成";
+            data["newFlightNumber"] = newFlight->flightNumber();
+            data["newDepartureCity"] = newFlight->departureCity();
+            data["newArrivalCity"] = newFlight->arrivalCity();
+
+            // 拼接日期和时间
+            QString newDepartureTime = QString("%1 %2")
+                                           .arg(newFlight->date().toString("yyyy-MM-dd"))
+                                           .arg(newFlight->departureTime().toString("HH:mm"));
+            data["newDepartureTime"] = newDepartureTime;
+
+            data["priceDifference"] = priceDifference;
+
+            response["code"] = 200;
+            response["message"] = "改签成功";
+            response["data"] = data;
+
+            // 清理资源
+            delete newFlight;
+
+        } catch (const QString& error) {
+            // 回滚事务
+            db.rollback();
+
+            response["code"] = 500;
+            response["message"] = error;
+            response["data"] = QJsonValue::Null;
+
+            qDebug() << "改签失败:" << error;
+        }
+
+        return response;
+    }
+
+    // 查询订单改签记录（保持不变）
+    QList<OrderChange*> getChangeByOrderId(const QString& orderId) {
+        QList<OrderChange*> changeList;
+        QSqlDatabase db = DBManager::getInstance().getConnection();
+        QSqlQuery query(db);
+
+        query.prepare("SELECT * FROM order_change WHERE order_id = ? ORDER BY change_time DESC");
+        query.addBindValue(orderId);
+
+        if (query.exec()) {
+            while (query.next()) {
+                OrderChange* change = new OrderChange();
+                change->setChangeId(query.value("change_id").toInt());
+                change->setOrderId(query.value("order_id").toString());
+                change->setOldFlightId(query.value("old_flight_id").toInt());
+                change->setNewFlightId(query.value("new_flight_id").toInt());
+                change->setPriceDifference(query.value("price_difference").toInt());
+                change->setChangeTime(query.value("change_time").toDateTime());
+                changeList.append(change);
+            }
+        } else {
+            qDebug() << "查询改签记录失败：" << query.lastError().text();
+        }
+        return changeList;
+    }
+
+    // 释放改签列表内存（保持不变）
+    void releaseChangeList(QList<OrderChange*>& changeList) {
+        for (OrderChange* change : changeList) {
+            delete change;
+        }
+        changeList.clear();
+    }
+};
+
+#endif // ORDERCHANGEDAO_H
+
+
+
+================================================
+FILE: OrderInfo.h
+================================================
+#ifndef ORDERINFO_H
+#define ORDERINFO_H
+#include <QObject>
+#include <QDateTime>
+#include <QString>
+
+class OrderInfo : public QObject
+{
+    Q_OBJECT
+    // 严格对应order_info表字段 + API返回字段
+    Q_PROPERTY(QString orderId READ orderId WRITE setOrderId)       // 订单ID（PK，ORD格式）
+    Q_PROPERTY(int userId READ userId WRITE setUserId)             // 用户ID（外键）
+    Q_PROPERTY(int flightId READ flightId WRITE setFlightId)       // 航班ID（外键）
+    Q_PROPERTY(int totalPrice READ totalPrice WRITE setTotalPrice) // 总金额（分，整数）
+    Q_PROPERTY(QString status READ status WRITE setStatus)         // 状态：待支付/已支付/已退签等
+    Q_PROPERTY(QDateTime createTime READ createTime WRITE setCreateTime) // 创建时间
+    Q_PROPERTY(QDateTime payTime READ payTime WRITE setPayTime)     // 支付时间（ nullable）
+    Q_PROPERTY(QDateTime refundTime READ refundTime WRITE setRefundTime) // 退签时间（nullable）
+
+public:
+    explicit OrderInfo(QObject *parent = nullptr) : QObject(parent) {}
+
+    // Getter（严格对应属性名）
+    QString orderId() const { return m_orderId; }
+    int userId() const { return m_userId; }
+    int flightId() const { return m_flightId; }
+    int totalPrice() const { return m_totalPrice; }
+    QString status() const { return m_status; }
+    QDateTime createTime() const { return m_createTime; }
+    QDateTime payTime() const { return m_payTime; }
+    QDateTime refundTime() const { return m_refundTime; }
+
+    // Setter
+    void setOrderId(const QString &orderId) { m_orderId = orderId; }
+    void setUserId(int userId) { m_userId = userId; }
+    void setFlightId(int flightId) { m_flightId = flightId; }
+    void setTotalPrice(int totalPrice) { m_totalPrice = totalPrice; }
+    void setStatus(const QString &status) { m_status = status; }
+    void setCreateTime(const QDateTime &createTime) { m_createTime = createTime; }
+    void setPayTime(const QDateTime &payTime) { m_payTime = payTime; }
+    void setRefundTime(const QDateTime &refundTime) { m_refundTime = refundTime; }
+
+private:
+    QString m_orderId;          // 订单ID（如ORD202512010001）
+    int m_userId = 0;           // 关联用户ID
+    int m_flightId = 0;         // 关联航班ID
+    int m_totalPrice = 0;       // 总金额（分）
+    QString m_status;          // 订单状态
+    QDateTime m_createTime;     // 创建时间
+    QDateTime m_payTime;       // 支付时间（未支付时为空）
+    QDateTime m_refundTime;     // 退签时间（未退签时为空）
+};
+
+#endif // ORDERINFO_H
+
+
+
+================================================
+FILE: OrderInfoDao.h
+================================================
+#ifndef ORDERINFODAO_H
+#define ORDERINFODAO_H
+#include "DBManager.h"
+#include "OrderInfo.h"
+#include "FlightDao.h"
+#include "Passenger.h"       // 需提前创建Passenger类（存储乘客信息）
+#include "PassengerDao.h"    // 需提前创建PassengerDao类（操作passenger表）
+#include "UserDao.h"
+#include "TokenTool.h"
+#include <QList>
+#include <QSqlQuery>
+#include <QDebug>
+#include <QDateTime>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QPair>
+
+class OrderInfoDao {
+public:
+    // 1. 机票预订（下单）- 适配API 1.3.1
+    QJsonObject bookOrder(const QString& authorizationHeader, int flightId, const QList<QPair<QString, QString>>& passengers) {
+        QJsonObject response;
+
+        // ===== 修改点：从Authorization头获取并验证Token =====
+        QString token = TokenTool::removeBearerPrefix(authorizationHeader);
+        int userId = TokenTool::getUserIdByToken(token);
+        if (userId == -1) {
+            response["code"] = 500;
+            response["message"] = "Token无效或已过期";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+        // ===== 修改结束 =====
+
+        FlightDao flightDao;
+        PassengerDao passengerDao;
+
+        // 校验1：航班是否存在+余票是否充足
+        Flight* flight = flightDao.getFlightById(flightId);
+        if (!flight) {
+            response["code"] = 500;
+            response["message"] = "航班不存在";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+        if (flight->leftTickets() < passengers.size()) {
+            delete flight;
+            response["code"] = 500;
+            response["message"] = "航班余票不足";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+
+        // 校验2：乘客信息完整性
+        for (auto& p : passengers) {
+            if (p.first.isEmpty() || p.second.isEmpty()) {
+                delete flight;
+                response["code"] = 500;
+                response["message"] = "乘客姓名或身份证号不能为空";
+                response["data"] = QJsonValue::Null;
+                return response;
+            }
+        }
+
+        // 核心：事务处理（扣减余票+创建订单+插入乘客）
+        QSqlDatabase db = DBManager::getInstance().getConnection();
+        db.transaction();
+        bool success = false;
+        QString orderId = generateOrderId();
+
+        try {
+            // 步骤1：扣减航班余票
+            if (!flightDao.reduceLeftTickets(flightId, passengers.size())) {
+                throw QString("余票扣减失败");
+            }
+
+            // 步骤2：创建订单
+            OrderInfo order;
+            order.setOrderId(orderId);
+            order.setUserId(userId);  // 使用从Token解析出的userId
+            order.setFlightId(flightId);
+            order.setTotalPrice(flight->price() * passengers.size()); // 单价×人数（分）
+            order.setStatus("待支付");
+            order.setCreateTime(QDateTime::currentDateTime());
+
+            QSqlQuery query;
+            query.prepare(R"(
+            INSERT INTO order_info
+            (order_id, user_id, flight_id, total_price, status, create_time)
+            VALUES (?, ?, ?, ?, ?, ?)
+        )");
+            query.addBindValue(order.orderId());
+            query.addBindValue(order.userId());
+            query.addBindValue(order.flightId());
+            query.addBindValue(order.totalPrice());
+            query.addBindValue(order.status());
+            query.addBindValue(order.createTime());
+            if (!query.exec()) {
+                throw QString("订单创建失败：" + query.lastError().text());
+            }
+
+            // 步骤3：插入乘客信息（关联passenger表）
+            for (auto& p : passengers) {
+                Passenger* passenger = new Passenger();
+                passenger->setOrderId(orderId);
+                passenger->setName(p.first);
+                passenger->setIdCard(p.second);
+                if (!passengerDao.addPassenger(passenger)) {
+                    delete passenger;
+                    throw QString("乘客信息插入失败：" + query.lastError().text());
+                }
+                delete passenger;
+            }
+
+            db.commit();
+            success = true;
+        } catch (QString err) {
+            db.rollback();
+            response["code"] = 500;
+            response["message"] = err;
+            response["data"] = QJsonValue::Null;
+        }
+
+        delete flight;
+        if (success) {
+            QJsonObject data;
+            data["orderId"] = orderId;
+            data["totalPrice"] = flight->price() * passengers.size();
+            data["status"] = "待支付";
+            response["code"] = 200;
+            response["message"] = "下单成功，请支付";
+            response["data"] = data;
+        }
+        return response;
+    }
+
+    // 2. 订单支付 - 适配API 1.3.2 (修复余额校验漏洞版本)
+    QJsonObject payOrder(const QString& authorizationHeader, const QString& orderId) {
+        QJsonObject response;
+
+        // 1. 验证 Token
+        QString token = TokenTool::removeBearerPrefix(authorizationHeader);
+        int userId = TokenTool::verifyToken(token);
+        if (userId == -1) {
+            response["code"] = 500;
+            response["message"] = "Token无效或已过期";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+
+        // 获取数据库连接并开启事务
+        QSqlDatabase db = DBManager::getInstance().getConnection();
+        if (!db.transaction()) {
+            response["code"] = 500;
+            response["message"] = "数据库事务启动失败";
+            return response;
+        }
+
+        QSqlQuery query(db);
+
+        // 2. 查询订单金额、状态及归属 (使用 FOR UPDATE 锁定行，防止并发问题)
+        // MySQL语法：SELECT ... FOR UPDATE
+        // SQLite语法：BEGIN IMMEDIATE TRANSACTION（已在上面开启）
+        query.prepare("SELECT total_price, status, user_id FROM order_info WHERE order_id = ?");
+        query.addBindValue(orderId);
+
+        if (!query.exec() || !query.next()) {
+            db.rollback();
+            response["code"] = 500;
+            response["message"] = "订单不存在";
+            return response;
+        }
+
+        // 修改点1：订单金额用整数（分）
+        int totalPriceFen = query.value("total_price").toInt(); // 改为toInt()
+        QString currentStatus = query.value("status").toString();
+        int orderUserId = query.value("user_id").toInt();
+
+        // 3. 安全校验：归属权
+        if (orderUserId != userId) {
+            db.rollback();
+            response["code"] = 500;
+            response["message"] = "无权操作该订单";
+            return response;
+        }
+
+        // 4. 安全校验：订单状态
+        if (currentStatus != "待支付") {
+            db.rollback();
+            response["code"] = 500;
+            response["message"] = "订单当前状态为[" + currentStatus + "]，不可支付";
+            return response;
+        }
+
+        // 5. 【核心修复】校验用户余额是否充足
+        query.prepare("SELECT balance FROM user WHERE user_id = ?");
+        query.addBindValue(userId);
+        if (!query.exec() || !query.next()) {
+            db.rollback();
+            response["code"] = 500;
+            response["message"] = "用户信息获取失败";
+            return response;
+        }
+
+        // 修改点2：用户余额用整数（分）
+        int userBalanceFen = query.value("balance").toInt(); // 改为toInt()
+
+        // 修改点3：整数比较，避免浮点数精度问题
+        if (userBalanceFen < totalPriceFen) {
+            db.rollback();
+            response["code"] = 500;
+
+            // 修改点4：显示时转换为元，保留2位小数
+            double totalPriceYuan = totalPriceFen / 100.0;
+            double userBalanceYuan = userBalanceFen / 100.0;
+
+            response["message"] = QString("余额不足！订单金额: ¥%1, 当前余额: ¥%2")
+                                      .arg(totalPriceYuan, 0, 'f', 2)
+                                      .arg(userBalanceYuan, 0, 'f', 2);
+            return response;
+        }
+
+        // 6. 执行扣款 (原子操作)
+        query.prepare("UPDATE user SET balance = balance - ? WHERE user_id = ?");
+        query.addBindValue(totalPriceFen); // 传递整数分
+        query.addBindValue(userId);
+        if (!query.exec()) {
+            db.rollback();
+            response["code"] = 500;
+            response["message"] = "账户扣款失败";
+            return response;
+        }
+
+        // 7. 更新订单状态和支付时间
+        QDateTime payTime = QDateTime::currentDateTime();
+        query.prepare("UPDATE order_info SET status = '已支付', pay_time = ? WHERE order_id = ?");
+        query.addBindValue(payTime);
+        query.addBindValue(orderId);
+
+        if (query.exec()) {
+            // 8. 提交事务
+            if (db.commit()) {
+                QJsonObject data;
+                data["orderId"] = orderId;
+                data["status"] = "已支付";
+                data["payTime"] = payTime.toString("yyyy-MM-dd HH:mm:ss");
+
+                // 修改点5：计算剩余余额并返回（分）
+                int remainingBalanceFen = userBalanceFen - totalPriceFen;
+                data["remainingBalance"] = remainingBalanceFen; // 返回分
+
+                response["code"] = 200;
+                response["message"] = "支付成功";
+                response["data"] = data;
+            } else {
+                db.rollback();
+                response["code"] = 500;
+                response["message"] = "事务提交失败";
+            }
+        } else {
+            db.rollback();
+            response["code"] = 500;
+            response["message"] = "更新订单状态失败";
+        }
+
+        return response;
+    }
+
+    // 3. 订单查询（个人列表）- 适配API 1.3.3
+    QJsonObject queryOrderByUserId(const QString& authorizationHeader, const QString& status = "") {
+        QJsonObject response;
+
+        // ===== 修改点：从Authorization头获取并验证Token =====
+        QString token = TokenTool::removeBearerPrefix(authorizationHeader);
+        int userId = TokenTool::getUserIdByToken(token);
+        if (userId == -1) {
+            response["code"] = 500;
+            response["message"] = "Token无效或已过期";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+        // ===== 修改结束 =====
+
+        QJsonArray orderArray;
+        QSqlQuery query;
+        PassengerDao passengerDao;
+
+        // 构建查询SQL（支持按状态筛选）
+        QString sql = "SELECT * FROM order_info WHERE user_id = ?";
+        QList<QVariant> bindValues = {userId};
+        if (!status.isEmpty()) {
+            sql += " AND status = ?";
+            bindValues.append(status);
+        }
+        sql += " ORDER BY create_time DESC";
+
+        query.prepare(sql);
+        for (int i = 0; i < bindValues.size(); ++i) {
+            query.addBindValue(bindValues[i]);
+        }
+
+        if (query.exec()) {
+            while (query.next()) {
+                QJsonObject orderObj;
+                // 订单基础信息
+                orderObj["orderId"] = query.value("order_id").toString();
+                orderObj["totalPrice"] = query.value("total_price").toInt();
+                orderObj["status"] = query.value("status").toString();
+                orderObj["createTime"] = query.value("create_time").toDateTime().toString("yyyy-MM-dd HH:mm:ss");
+
+                // 关联航班信息（从flight表查询）
+                int flightId = query.value("flight_id").toInt();
+                FlightDao flightDao;
+                Flight* flight = flightDao.getFlightById(flightId);
+                if (flight) {
+                    orderObj["flightNumber"] = flight->flightNumber();
+                    orderObj["departureCity"] = flight->departureCity();
+                    orderObj["arrivalCity"] = flight->arrivalCity();
+                    orderObj["departureTime"] = QString("%1 %2").arg(flight->date().toString("yyyy-MM-dd")).arg(flight->departureTime().toString("HH:mm"));
+                    delete flight;
+                }
+
+                // 关联乘客信息（从passenger表查询）
+                QJsonArray passengerArray;
+                QList<Passenger*> passengers = passengerDao.getPassengerByOrderId(query.value("order_id").toString());
+                for (Passenger* p : passengers) {
+                    QJsonObject pObj;
+                    pObj["name"] = p->name();
+                    pObj["idCard"] = p->idCard().left(6) + "********" + p->idCard().right(4); // 脱敏
+                    passengerArray.append(pObj);
+                }
+                passengerDao.releasePassengerList(passengers);
+                orderObj["passengers"] = passengerArray;
+
+                orderArray.append(orderObj);
+            }
+        } else {
+            response["code"] = 500;
+            response["message"] = "查询失败：" + query.lastError().text();
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+
+        if (orderArray.isEmpty()) {
+            response["code"] = 500;
+            response["message"] = "无订单记录";
+            response["data"] = QJsonValue::Null;
+        } else {
+            response["code"] = 200;
+            response["message"] = "获取成功";
+            response["data"] = orderArray;
+        }
+        return response;
+    }
+
+    //1.3.4在orderchange中
+    // 4. 订单退签 - 适配API 1.3.5（添加Token验证+用户权限校验）
+    QJsonObject refundOrder(const QString& authorizationHeader, const QString& orderId) {
+        QJsonObject response;
+        QSqlQuery query;
+        FlightDao flightDao;
+        PassengerDao passengerDao;
+
+        // ===== 修改：使用TokenTool处理Bearer前缀 =====
+        QString token = TokenTool::removeBearerPrefix(authorizationHeader);
+        int userId = TokenTool::getUserIdByToken(token);
+        // ===== 修改结束 =====
+
+        if (userId == -1) {
+            response["code"] = 500;
+            response["message"] = "Token无效或已过期";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+
+        // 2. 校验订单归属（确保订单属于当前用户）
+        query.prepare("SELECT flight_id, status, user_id FROM order_info WHERE order_id = ?");
+        query.addBindValue(orderId);
+        if (!query.exec() || !query.next()) {
+            response["code"] = 500;
+            response["message"] = "订单不存在";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+        // 新增：校验订单所属用户ID与Token解析的ID一致
+        if (query.value("user_id").toInt() != userId) {
+            response["code"] = 500;
+            response["message"] = "无权操作该订单";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+
+        // ===== 原有业务逻辑（仅调整查询字段，其余完全不变）=====
+        if (query.value("status").toString() != "已支付") {
+            response["code"] = 500;
+            response["message"] = "已过退签时间或订单未支付";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+
+        // 事务处理：恢复余票+更新订单状态
+        QSqlDatabase db = DBManager::getInstance().getConnection();
+        db.transaction();
+        int flightId = query.value("flight_id").toInt();
+        bool success = false;
+
+        try {
+            // 步骤1：查询乘客数（用于恢复余票）
+            int passengerCount = passengerDao.getPassengerCountByOrderId(orderId);
+
+            // 步骤2：恢复航班余票
+            if (!flightDao.addLeftTickets(flightId, passengerCount)) {
+                throw QString("余票恢复失败");
+            }
+
+            // 步骤3：更新订单状态+退签时间
+            QDateTime refundTime = QDateTime::currentDateTime();
+            query.prepare(R"(
+            UPDATE order_info
+            SET status = '已退签', refund_time = ?
+            WHERE order_id = ?
+        )");
+            query.addBindValue(refundTime);
+            query.addBindValue(orderId);
+            if (!query.exec()) {
+                throw QString("订单状态更新失败：" + query.lastError().text());
+            }
+
+            db.commit();
+            success = true;
+        } catch (QString err) {
+            db.rollback();
+            response["code"] = 500;
+            response["message"] = err;
+            response["data"] = QJsonValue::Null;
+        }
+
+        if (success) {
+            QJsonObject data;
+            data["orderId"] = orderId;
+            data["status"] = "已退签";
+            data["refundTime"] = QDateTime::currentDateTime().toString("yyyy-MM-dd HH:mm:ss");
+            response["code"] = 200;
+            response["message"] = "退签成功";
+            response["data"] = data;
+        }
+        return response;
+    }
+
+    // 新增：删除订单（针对未付款/已取消）- 适配API 1.3.6
+    QJsonObject deleteOrder(const QString& authorizationHeader, const QString& orderId) {
+        QJsonObject response;
+
+        // ===== 修改：使用TokenTool处理Bearer前缀 =====
+        QString token = TokenTool::removeBearerPrefix(authorizationHeader);
+        int userId = TokenTool::getUserIdByToken(token);
+        // ===== 修改结束 =====
+
+        if (userId == -1) {
+            response["code"] = 500;
+            response["message"] = "Token无效或已过期";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+
+        QSqlQuery query;
+        // 校验1：订单是否存在且属于当前用户
+        query.prepare("SELECT status FROM order_info WHERE order_id = ? AND user_id = ?");
+        query.addBindValue(orderId);
+        query.addBindValue(userId);
+        if (!query.exec() || !query.next()) {
+            response["code"] = 500;
+            response["message"] = "订单不存在或无权操作";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+
+        // 校验2：订单状态是否为"待支付"或"已取消"
+        QString status = query.value(0).toString();
+        if (status != "待支付" && status != "已取消") {
+            response["code"] = 500;
+            response["message"] = "只能删除未支付或已取消的订单";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+
+        // 事务处理：删除订单+删除关联乘客
+        QSqlDatabase db = DBManager::getInstance().getConnection();
+        db.transaction();
+        PassengerDao passengerDao;
+        bool success = false;
+
+        try {
+            // 步骤1：删除订单
+            query.prepare("DELETE FROM order_info WHERE order_id = ?");
+            query.addBindValue(orderId);
+            if (!query.exec()) {
+                throw QString("订单删除失败");
+            }
+
+            // 步骤2：删除关联乘客
+            if (!passengerDao.deletePassengerByOrderId(orderId)) {
+                throw QString("乘客信息删除失败");
+            }
+
+            db.commit();
+            success = true;
+        } catch (QString err) {
+            db.rollback();
+            response["code"] = 500;
+            response["message"] = err;
+            response["data"] = QJsonValue::Null;
+        }
+
+        if (success) {
+            QJsonObject data;
+            data["orderId"] = orderId;
+            response["code"] = 200;
+            response["message"] = "删除成功";
+            response["data"] = data;
+        }
+        return response;
+    }
+
+    // 释放订单列表内存
+    void releaseOrderList(QList<OrderInfo*>& orderList) {
+        for (OrderInfo* order : orderList) {
+            delete order;
+        }
+        orderList.clear();
+    }
+
+private:
+    // 生成ORD格式订单ID（如ORD202512010001）
+    QString generateOrderId() {
+        QString dateStr = QDateTime::currentDateTime().toString("yyyyMMdd");
+        QSqlQuery query;
+        query.prepare("SELECT MAX(RIGHT(order_id, 4)) FROM order_info WHERE order_id LIKE ?");
+        query.addBindValue(QString("ORD%1%").arg(dateStr));
+        int maxSeq = 0;
+        if (query.exec() && query.next() && !query.isNull(0)) {
+            maxSeq = query.value(0).toInt();
+        }
+        int newSeq = maxSeq + 1;
+        QString seqStr = QString("%1").arg(newSeq, 4, 10, QChar('0'));
+        return QString("ORD%1%2").arg(dateStr).arg(seqStr);
+    }
+};
+
+#endif // ORDERINFODAO_H
+
+
+
+================================================
+FILE: Passenger.h
+================================================
+#ifndef PASSENGER_H
+#define PASSENGER_H
+#include <QObject>
+#include <QString>
+
+class Passenger : public QObject
+{
+    Q_OBJECT
+    Q_PROPERTY(QString orderId READ orderId WRITE setOrderId)
+    Q_PROPERTY(QString name READ name WRITE setName)
+    Q_PROPERTY(QString idCard READ idCard WRITE setIdCard)
+
+public:
+    explicit Passenger(QObject *parent = nullptr) : QObject(parent) {}
+
+    QString orderId() const { return m_orderId; }
+    QString name() const { return m_name; }
+    QString idCard() const { return m_idCard; }
+
+    void setOrderId(const QString &orderId) { m_orderId = orderId; }
+    void setName(const QString &name) { m_name = name; }
+    void setIdCard(const QString &idCard) { m_idCard = idCard; }
+
+private:
+    QString m_orderId;    // 关联订单ID
+    QString m_name;       // 乘客姓名
+    QString m_idCard;     // 身份证号
+};
+
+#endif // PASSENGER_H
+
+
+
+================================================
+FILE: PassengerDao.h
+================================================
+#ifndef PASSENGERDAO_H
+#define PASSENGERDAO_H
+#include "Passenger.h"
+#include"DBManager.h"
+#include <QList>
+#include <QSqlQuery>
+#include <QDebug>
+
+class PassengerDao {
+public:
+    // 添加乘客
+    bool addPassenger(Passenger* passenger) {
+        if (passenger->orderId().isEmpty() || passenger->name().isEmpty() || passenger->idCard().isEmpty()) {
+            qDebug() << "乘客信息不完整";
+            return false;
+        }
+        QSqlQuery query;
+        query.prepare("INSERT INTO passenger (order_id, name, id_card) VALUES (?, ?, ?)");
+        query.addBindValue(passenger->orderId());
+        query.addBindValue(passenger->name());
+        query.addBindValue(passenger->idCard());
+        return query.exec();
+    }
+
+    // 按订单ID查询乘客
+    QList<Passenger*> getPassengerByOrderId(const QString& orderId) {
+        QList<Passenger*> passengerList;
+        QSqlQuery query;
+        query.prepare("SELECT * FROM passenger WHERE order_id = ?");
+        query.addBindValue(orderId);
+        if (query.exec()) {
+            while (query.next()) {
+                Passenger* p = new Passenger();
+                p->setOrderId(query.value("order_id").toString());
+                p->setName(query.value("name").toString());
+                p->setIdCard(query.value("id_card").toString());
+                passengerList.append(p);
+            }
+        }
+        return passengerList;
+    }
+
+    int getPassengerCountByOrderId(const QString& orderId) {
+        QSqlQuery query(DBManager::getInstance().getConnection());
+        query.prepare("SELECT COUNT(*) FROM passenger WHERE order_id = ?");
+        query.addBindValue(orderId);
+        if (query.exec() && query.next()) {
+            return query.value(0).toInt();
+        }
+        return 0;
+    }
+
+
+    // 按订单ID删除乘客
+    bool deletePassengerByOrderId(const QString& orderId) {
+        QSqlQuery query;
+        query.prepare("DELETE FROM passenger WHERE order_id = ?");
+        query.addBindValue(orderId);
+        return query.exec();
+    }
+
+
+    // 释放乘客列表内存
+    void releasePassengerList(QList<Passenger*>& passengerList) {
+        for (Passenger* p : passengerList) {
+            delete p;
+        }
+        passengerList.clear();
+    }
+};
+
+#endif // PASSENGERDAO_H
+
+
+
+================================================
+FILE: TokenTool.cpp
+================================================
+[Binary file]
+
+
+================================================
+FILE: TokenTool.h
+================================================
+#ifndef TOKENTOOL_H
+#define TOKENTOOL_H
+
+#include <QString>
+#include <QMap>
+#include <QPair>
+#include <QDateTime>
+#include <QCryptographicHash>
+#include <QMutex>
+
+class TokenTool {
+public:
+    // 生成Token（默认2小时过期，可自定义过期秒数）
+    static QString generateToken(int userId, int expireSeconds = 7200);
+
+    // 保存Token与用户ID、过期时间的映射
+    static void saveToken(int userId, const QString& token);
+
+    // 通过Token获取用户ID（-1表示Token无效/过期）
+    // 注意：此函数内部会自动处理Bearer前缀，无需外部手动处理
+    static int getUserIdByToken(const QString& token);
+
+    // 注销Token（用户登出时调用）
+    static void removeToken(const QString& token);
+
+    // 工具函数：移除Bearer前缀（仅用于特殊场景，一般情况使用getUserIdByToken或verifyToken）
+    static QString removeBearerPrefix(const QString& token);
+
+    // 从请求头提取Bearer token（推荐使用此函数或直接调用getUserIdByToken）
+    static QString getTokenFromHeader(const QByteArray& authorizationHeader);
+
+    // 验证token并返回用户ID（无效返回-1）
+    // 注意：此函数内部会自动处理Bearer前缀，无需外部手动处理
+    static int verifyToken(const QString& token);
+
+    // 调试函数：打印当前Token状态
+    static void debugTokenStatus();
+
+private:
+    // 从配置文件/常量获取密钥（可自行修改密钥内容）
+    static QString getSecretKey();
+
+    // 存储结构：Token -> (UserID, 过期时间戳)
+    static QMap<QString, QPair<int, qint64>> m_tokenMap;
+    // 线程锁（保证多线程安全）
+    static QMutex m_mutex;
+};
+
+#endif // TOKENTOOL_H
+
+
+
+================================================
+FILE: User.h
+================================================
+#ifndef USER_H
+#define USER_H
+
+#include <QObject>
+#include <QString>
+#include <QDateTime>
+
+class User : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(int userId READ userId WRITE setUserId)
+    Q_PROPERTY(QString telephone READ telephone WRITE setTelephone)
+    Q_PROPERTY(QString password READ password WRITE setPassword)
+    Q_PROPERTY(QString username READ username WRITE setUsername)
+    Q_PROPERTY(QDateTime registerTime READ registerTime WRITE setRegisterTime)
+    Q_PROPERTY(int balance READ balance WRITE setBalance) // 新增balance属性
+
+public:
+    explicit User(QObject *parent = nullptr) : QObject(parent), m_userId(0), m_balance(0) {}
+
+    // Getter
+    int userId() const { return m_userId; }
+    QString telephone() const { return m_telephone; }
+    QString password() const { return m_password; }
+    QString username() const { return m_username; }
+    QDateTime registerTime() const { return m_registerTime; }
+    int balance() const { return m_balance; } // 新增balance getter
+
+    // Setter
+    void setUserId(int userId) { m_userId = userId; }
+    void setTelephone(const QString &telephone) { m_telephone = telephone; }
+    void setPassword(const QString &password) { m_password = password; }
+    void setUsername(const QString &username) { m_username = username; }
+    void setRegisterTime(const QDateTime &registerTime) { m_registerTime = registerTime; }
+    void setBalance(int balance) { m_balance = balance; } // 新增balance setter
+
+private:
+    int m_userId;
+    QString m_telephone;
+    QString m_password;
+    QString m_username;
+    QDateTime m_registerTime;
+    int m_balance; // 新增balance成员变量
+};
+
+#endif // USER_H
+
+
+
+================================================
+FILE: UserDao.h
+================================================
+#ifndef USERDAO_H
+#define USERDAO_H
+
+#include "DBManager.h"
+#include "User.h"
+#include <QList>
+#include <QJsonObject>
+#include <QJsonDocument>
+#include <QCryptographicHash>
+#include <QDateTime>
+#include <QSqlError>
+#include "TokenTool.h"
+
+// UserDao.h 修改后的完整版本：
+
+class UserDao {
+public:
+    // 1. 获取用户完整信息
+    QJsonObject getUserInfoByToken(const QString& authorizationHeader) {
+        QJsonObject response;
+        int userId = TokenTool::verifyToken(authorizationHeader);
+
+        if (userId == -1) {
+            response["code"] = 500;
+            response["message"] = "Token无效或已过期";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+
+        QSqlQuery query(DBManager::getInstance().getConnection());
+        query.prepare("SELECT user_id, telephone, username, balance, register_time FROM user WHERE user_id = ?");
+        query.addBindValue(userId);
+
+        if (query.exec() && query.next()) {
+            QJsonObject data;
+            data["userId"] = query.value("user_id").toInt();
+            data["telephone"] = query.value("telephone").toString();
+            data["username"] = query.value("username").toString();
+
+            // 数据库存的是分，直接返回分
+            data["balance"] = query.value("balance").toInt();
+
+            data["registerTime"] = query.value("register_time").toDateTime().toString("yyyy-MM-dd HH:mm:ss");
+
+            response["code"] = 200;
+            response["message"] = "获取成功";
+            response["data"] = data;
+        } else {
+            response["code"] = 500;
+            response["message"] = "用户不存在";
+            response["data"] = QJsonValue::Null;
+        }
+        return response;
+    }
+
+    // 2. 根据手机号查询用户
+    User* getUserByTelephone(const QString& telephone) {
+        QSqlQuery query(DBManager::getInstance().getConnection());
+        query.prepare("SELECT * FROM user WHERE telephone = ?");
+        query.addBindValue(telephone);
+        if (query.exec() && query.next()) {
+            User* user = new User();
+            user->setUserId(query.value("user_id").toInt());
+            user->setTelephone(query.value("telephone").toString());
+            user->setPassword(query.value("password").toString());
+            user->setUsername(query.value("username").toString());
+            user->setRegisterTime(query.value("register_time").toDateTime());
+
+            // 数据库存的是分，直接设置
+            user->setBalance(query.value("balance").toInt());
+
+            return user;
+        }
+        return nullptr;
+    }
+
+    // 3. 登录业务
+    QJsonObject login(const QString& telephone, const QString& password) {
+        QJsonObject response;
+        User* user = getUserByTelephone(telephone);
+
+        if (!user || user->password() != password) {
+            if(user) delete user;
+            response["code"] = 500;
+            response["message"] = "账号或密码错误";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+
+        QString token = TokenTool::generateToken(user->userId());
+        TokenTool::saveToken(user->userId(), token);
+
+        QJsonObject data;
+        data["userId"] = user->userId();
+        data["username"] = user->username();
+        data["telephone"] = user->telephone();
+        // 数据库存的是分，直接返回
+        data["balance"] = user->balance();
+        data["token"] = token;
+
+        response["code"] = 200;
+        response["message"] = "登录成功";
+        response["data"] = data;
+
+        delete user;
+        return response;
+    }
+
+    // 4. 注册业务
+    QJsonObject registerUser(const QString& telephone, const QString& password, const QString& username) {
+        QJsonObject response;
+        QSqlQuery query(DBManager::getInstance().getConnection());
+
+        if (getUserByTelephone(telephone)) {
+            response["code"] = 500;
+            response["message"] = "手机号已被注册";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+
+        query.prepare("INSERT INTO user (telephone, password, username, register_time, balance) VALUES (?, ?, ?, ?, ?)");
+        query.addBindValue(telephone);
+        query.addBindValue(password);
+        query.addBindValue(username);
+        query.addBindValue(QDateTime::currentDateTime());
+        query.addBindValue(0); // 初始余额 0 分
+
+        if (query.exec()) {
+            QJsonObject data;
+            data["userId"] = query.lastInsertId().toInt();
+            data["telephone"] = telephone;
+            data["username"] = username;
+            response["code"] = 200;
+            response["message"] = "注册成功";
+            response["data"] = data;
+        } else {
+            response["code"] = 500;
+            response["message"] = "注册失败";
+        }
+        return response;
+    }
+
+    // 5. 修改用户信息 API
+    QJsonObject updateUserInfoApi(const QString& authorizationHeader, const QString& newUsername,
+                                  const QString& oldPassword, const QString& newPassword, int addBalanceFen = -1) {
+        QJsonObject response;
+        int userId = TokenTool::verifyToken(authorizationHeader);
+
+        if (userId == -1) {
+            response["code"] = 500;
+            response["message"] = "Token无效或已过期";
+            response["data"] = QJsonValue::Null;
+            return response;
+        }
+
+        QString sql = "UPDATE user SET ";
+        QList<QVariant> bindValues;
+        bool hasUpdates = false;
+
+        // 处理用户名
+        if (!newUsername.isEmpty()) {
+            sql += "username = ?";
+            bindValues << newUsername;
+            hasUpdates = true;
+        }
+
+        // 处理密码 (需验证旧密码)
+        if (!newPassword.isEmpty()) {
+            QSqlQuery checkQuery(DBManager::getInstance().getConnection());
+            checkQuery.prepare("SELECT password FROM user WHERE user_id = ?");
+            checkQuery.addBindValue(userId);
+            if (!checkQuery.exec() || !checkQuery.next() || checkQuery.value(0).toString() != oldPassword) {
+                response["code"] = 500;
+                response["message"] = "旧密码验证失败";
+                return response;
+            }
+            if (hasUpdates) sql += ", ";
+            sql += "password = ?";
+            bindValues << newPassword;
+            hasUpdates = true;
+        }
+
+        // 处理余额充值: 数据库存的是分，直接加
+        if (addBalanceFen >= 0) {
+            if (hasUpdates) sql += ", ";
+            sql += "balance = balance + ?";
+            bindValues << addBalanceFen; // 直接加分，不需要转换
+            hasUpdates = true;
+        }
+
+        if (!hasUpdates) {
+            response["code"] = 200;
+            response["message"] = "无需要更新的字段";
+            return response;
+        }
+
+        sql += " WHERE user_id = ?";
+        bindValues << userId;
+
+        QSqlQuery query(DBManager::getInstance().getConnection());
+        query.prepare(sql);
+        for (const auto& val : bindValues) query.addBindValue(val);
+
+        if (query.exec()) {
+            QJsonObject data;
+            data["userId"] = userId;
+
+            // 查询最新数据返回前端
+            QSqlQuery fetchQuery(DBManager::getInstance().getConnection());
+            fetchQuery.prepare("SELECT username, balance FROM user WHERE user_id = ?");
+            fetchQuery.addBindValue(userId);
+
+            if (fetchQuery.exec() && fetchQuery.next()) {
+                data["username"] = fetchQuery.value("username").toString();
+                // 数据库存的是分，直接返回
+                data["balance"] = fetchQuery.value("balance").toInt();
+            }
+
+            response["code"] = 200;
+            response["message"] = "修改成功";
+            response["data"] = data;
+        } else {
+            response["code"] = 500;
+            response["message"] = "修改失败: " + query.lastError().text();
+        }
+
+        return response;
+    }
+
+    // 6. 添加 addUser 方法（供 UserService 使用）
+    bool addUser(User* user, int& newUserId) {
+        QSqlQuery query(DBManager::getInstance().getConnection());
+        query.prepare("INSERT INTO user (telephone, password, username, register_time, balance) VALUES (?, ?, ?, ?, ?)");
+        query.addBindValue(user->telephone());
+        query.addBindValue(user->password());
+        query.addBindValue(user->username());
+        query.addBindValue(QDateTime::currentDateTime());
+        query.addBindValue(user->balance()); // 已经是分
+
+        if (query.exec()) {
+            newUserId = query.lastInsertId().toInt();
+            return true;
+        }
+        return false;
+    }
+
+    // 7. 添加 updateUserInfo 方法（供 UserService 使用）
+    bool updateUserInfo(int userId, const QString& newUsername,
+                        const QString& oldPassword, const QString& newPassword) {
+        QSqlQuery query(DBManager::getInstance().getConnection());
+
+        // 验证旧密码
+        query.prepare("SELECT password FROM user WHERE user_id = ?");
+        query.addBindValue(userId);
+        if (!query.exec() || !query.next() || query.value(0).toString() != oldPassword) {
+            return false;
+        }
+
+        // 更新用户名和密码
+        query.prepare("UPDATE user SET username = ?, password = ? WHERE user_id = ?");
+        query.addBindValue(newUsername);
+        query.addBindValue(newPassword);
+        query.addBindValue(userId);
+
+        return query.exec();
+    }
+};
+
+#endif // USERDAO_H
+
+
+
+================================================
+FILE: UserService.h
+================================================
+//userservice用于协调多个 UserDao 方法完成复杂业务
+
+#ifndef USERSERVICE_H
+#define USERSERVICE_H
+
+#include "UserDao.h"
+#include "TokenTool.h"
+#include <QVariantMap>
+
+class UserService {
+public:
+
+    // 新增：获取用户信息接口（适配1.4.1 API）
+    QJsonObject getUserInfo(const QString& token) {
+        UserDao dao;
+        return dao.getUserInfoByToken(token);
+    }
+
+    // 登录接口（返回userId、username、token）
+    QVariantMap login(const QString& telephone, const QString& password) {
+        QVariantMap result;
+        UserDao dao;
+        User* user = dao.getUserByTelephone(telephone);
+
+        if (!user) {
+            result["success"] = false;
+            result["message"] = "用户不存在";
+            return result;
+        }
+
+        if (user->password() != password) {
+            result["success"] = false;
+            result["message"] = "密码错误";
+            delete user;
+            return result;
+        }
+
+        // 生成token
+        QString token = TokenTool::generateToken(user->userId());
+        TokenTool::saveToken(user->userId(), token);
+        result["success"] = true;
+        result["data"] = QVariantMap{
+            {"userId", user->userId()},
+            {"username", user->username()},
+            {"token", token}
+        };
+
+        delete user;
+        return result;
+    }
+
+    // 注册接口（返回userId）
+    QVariantMap registerUser(const QString& telephone, const QString& password,
+                             const QString& username) {
+        QVariantMap result;
+        UserDao dao;
+
+        // 直接调用UserDao中的registerUser方法
+        QJsonObject jsonResult = dao.registerUser(telephone, password, username);
+
+        if (jsonResult["code"].toInt() == 200) {
+            result["success"] = true;
+            result["data"] = QVariantMap{{"userId", jsonResult["data"].toObject()["userId"].toInt()}};
+        } else {
+            result["success"] = false;
+            result["message"] = jsonResult["message"].toString();
+        }
+        return result;
+    }
+
+    // 个人信息修改接口
+    QVariantMap updateUser(int userId, const QString& newUsername, const QString& oldPassword, const QString& newPassword) {
+        QVariantMap result;
+        UserDao dao;
+
+        if (dao.updateUserInfo(userId, newUsername, oldPassword, newPassword)) {
+            result["success"] = true;
+            result["message"] = "修改成功";
+        } else {
+            result["success"] = false;
+            result["message"] = "修改失败（旧密码错误或用户不存在）";
+        }
+        return result;
+    }
+
+    // 新增：通过Token修改用户信息（适配API的token验证逻辑）
+    QJsonObject updateUser(const QString& token, const QString& newUsername,
+                           const QString& oldPassword, const QString& newPassword,
+                           int newBalance = -1) {
+        UserDao dao;
+        // 直接传递完整的token（包含Bearer前缀），让UserDao内部处理
+        return dao.updateUserInfoApi(token, newUsername, oldPassword, newPassword, newBalance);
+    }
+
+};
+
+#endif // USERSERVICE_H
+
+

@@ -3,24 +3,9 @@ import QtQuick.Layouts 1.15
 import QtQuick.Controls 2.15
 import FluentUI 1.0
 
-// 【重构】：根节点改为原生 Rectangle，确保边框绝对可见
-Rectangle {
-    id: root
-
-    // --- 1. 外观样式 (高对比度) ---
-    color: FluTheme.surfaceColor || "#FFFFFF" // 卡片背景：白色
-    radius: 8                                 // 圆角
-    border.width: 1                           // 边框宽度：1px
-    border.color: FluTheme.dark ? "#404040" : "#D4D4D4" // 边框颜色：深灰/浅灰
-
-    // 添加阴影增加立体感 (如果你的FluentUI版本不支持 FluShadow，可删除此段)
-    FluShadow {
-        radius: 8
-        anchors.fill: parent
-        z: -1
-    }
-
-    // --- 2. 业务属性 (完全保留原有逻辑) ---
+// 订单卡片组件
+Item {
+    // 定义组件属性
     property string orderId: ""
     property string flightNumber: ""
     property string departureCity: ""
@@ -31,20 +16,33 @@ Rectangle {
     property double price: 0
     property string createTime: ""
     property string passengers: "[]"
-    property var passengerList: { try { return JSON.parse(passengers) } catch (e) { return [] } }
-
+    
+    // 解析乘车人数据为数组
+    property var passengerList: {
+        try {
+            return JSON.parse(passengers)
+        } catch (e) {
+            return []
+        }
+    }
+    
+    // 倒计时相关属性
     property int hoursUntilDeparture: 0
     property int minutesUntilDeparture: 0
-
+    
+    // 定义信号
     signal payButtonClicked
     signal refundButtonClicked
     signal changeButtonClicked
-
-    // --- 3. 倒计时逻辑 (完全保留) ---
+    signal paymentRequest(string orderId, double price)
+    signal refundRequest(string orderId)
+    
+    // 初始化倒计时
     function initCountdown() {
         var now = new Date();
         var departure = new Date(departureTime);
         var diff = departure.getTime() - now.getTime();
+        
         if (diff > 0) {
             hoursUntilDeparture = Math.floor(diff / (1000 * 60 * 60));
             minutesUntilDeparture = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
@@ -53,94 +51,228 @@ Rectangle {
             minutesUntilDeparture = 0;
         }
     }
+    
+    // 定时器更新倒计时
     Timer {
-        id: countdownTimer; interval: 60000; repeat: true
+        id: countdownTimer
+        interval: 60000 // 每分钟更新一次
+        repeat: true
         running: status === "已支付" && hoursUntilDeparture > 0
-        onTriggered: initCountdown()
+        onTriggered: {
+            initCountdown();
+        }
     }
-    Component.onCompleted: initCountdown()
+    
+    // 组件加载时初始化倒计时
+    Component.onCompleted: {
+        initCountdown();
+    }
+    
+    width: parent.width - 40
+    height: 180
+    
+    FluControlBackground {
+        width: parent.width
+        height: parent.height
+        // 移除固定背景色，让FluControlBackground自动处理黑夜模式
 
-    // --- 4. 内部布局 (优化版) ---
-    ColumnLayout {
-        anchors.fill: parent
-        anchors.margins: 12
-        spacing: 8
+        // 使用GridLayout来精确控制元素位置，与航班卡片保持一致
+        GridLayout {
+            id: contentGrid
+            columns: 4
+            columnSpacing: 15
+            rowSpacing: 5
+            anchors.fill: parent
+            anchors.margins: 10
 
-        // 第一行：订单号与状态
-        RowLayout {
-            Layout.fillWidth: true
-            FluText {
-                text: "订单号: " + orderId
-                color: "#808080"
-                font.pixelSize: 12
-            }
-            Item { Layout.fillWidth: true } // 占位符
-            FluText {
-                text: status
-                font.bold: true
-                color: status === "已完成" ? "#52c41a" : (status === "待支付" ? "#ff4d4f" : "#faad14")
-            }
-        }
-
-        // 第二行：分割线
-        Rectangle { Layout.fillWidth: true; height: 1; color: "#EEEEEE" }
-
-        // 第三行：核心航班信息
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 20
-
-            // 左：航班号与时间
+            // 1. 订单信息列（航班号、订单号、状态、创建时间）
             Column {
-                FluText { text: flightNumber; font: FluTextStyle.BodyStrong }
-                FluText { text: createTime; font.pixelSize: 10; color: "#999999" }
+                Layout.preferredWidth: 160
+                Layout.alignment: Qt.AlignLeft | Qt.AlignTop
+                spacing: 6
+
+                FluText {
+                    text: flightNumber
+                    font: FluTextStyle.Title
+                    width: parent.width
+                }
+                FluText {
+                    text: "订单号: " + orderId
+                    font: FluTextStyle.Body
+                    width: parent.width
+                    color: FluTheme.dark ? Qt.rgba(128/255, 128/255, 128/255, 1) : Qt.rgba(160/255, 160/255, 160/255, 1)
+                }
+                FluText {
+                    text: status
+                    font: FluTextStyle.Body
+                    color: status === "已完成" ? "green" : (status === "待支付" ? "red" : "orange")
+                    width: parent.width
+                }
+                FluText {
+                    text: "创建时间: " + (createTime || "")
+                    font.pixelSize: 11
+                    width: parent.width
+                    color: FluTheme.dark ? Qt.rgba(128/255, 128/255, 128/255, 1) : Qt.rgba(160/255, 160/255, 160/255, 1)
+                    wrapMode: Text.WrapAnywhere
+                }
             }
 
-            // 中：路线
-            Item { Layout.fillWidth: true }
+            // 2. 航班信息列（出发城市、箭头、到达城市）
             Column {
-                Layout.alignment: Qt.AlignHCenter
-                FluText { text: departureCity + " → " + arrivalCity; font: FluTextStyle.Title }
-                FluText { text: (departureTime || "") + " 起飞"; font.pixelSize: 12; color: "#666666" }
-            }
-            Item { Layout.fillWidth: true }
-        }
+                Layout.preferredWidth: 260
+                Layout.alignment: Qt.AlignTop | Qt.AlignHCenter
+                spacing: 8
 
-        // 第四行：乘客信息摘要
-        FluText {
-            text: "乘客: " + (passengerList.length > 0 ? passengerList.map(p => p.name).join(", ") : "无")
-            color: "#666666"
-            font.pixelSize: 12
-            elide: Text.ElideRight
-            Layout.fillWidth: true
-        }
+                Row {
+                    width: parent.width
+                    spacing: 12
+                    anchors.horizontalCenter: parent.horizontalCenter
 
-        Item { Layout.fillHeight: true } // 底部弹簧，将按钮推到底部
+                    // 出发
+                    Column {
+                        id: leftCol
+                        width: 90
+                        spacing: 4
 
-        // 第五行：价格与按钮
-        RowLayout {
-            Layout.fillWidth: true
-            FluText {
-                text: "¥" + (price || 0).toFixed(2)
-                font: FluTextStyle.Title
-                color: FluTheme.primaryColor
-            }
-            Item { Layout.fillWidth: true }
+                        FluText {
+                            text: departureCity
+                            font: FluTextStyle.Title
+                            width: parent.width
+                            horizontalAlignment: Text.AlignHCenter
+                            elide: Text.ElideRight
+                        }
 
-            FluButton {
-                text: "改签"
-                visible: status === "待支付" || status === "已支付" || status === "已完成"
-                onClicked: changeButtonClicked()
+                        FluText {
+                            text: departureTime || ""
+                            font.pixelSize: 11
+                            width: parent.width
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.WrapAnywhere
+                            color: FluTheme.dark ? Qt.rgba(200/255, 200/255, 200/255, 1) : Qt.rgba(160/255, 160/255, 160/255, 1)
+                        }
+                    }
+
+                    // 箭头（强制居中）
+                    Item {
+                        width: 30
+                        height: Math.max(leftCol.implicitHeight, rightCol.implicitHeight)
+
+                        FluText {
+                            text: "→"
+                            font.pixelSize: 20
+                            anchors.centerIn: parent
+                            color: FluTheme.dark ? Qt.rgba(200/255, 200/255, 200/255, 1) : Qt.rgba(80/255, 80/255, 80/255, 1)
+                        }
+                    }
+
+                    // 到达
+                    Column {
+                        id: rightCol
+                        width: 90
+                        spacing: 4
+
+                        FluText {
+                            text: arrivalCity
+                            font: FluTextStyle.Title
+                            width: parent.width
+                            horizontalAlignment: Text.AlignHCenter
+                            elide: Text.ElideRight
+                        }
+
+                        FluText {
+                            text: arrivalTime || ""
+                            font.pixelSize: 11
+                            width: parent.width
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.WrapAnywhere
+                            color: FluTheme.dark ? Qt.rgba(200/255, 200/255, 200/255, 1) : Qt.rgba(160/255, 160/255, 160/255, 1)
+                        }
+                    }
+                }
             }
-            FluButton {
-                text: "退票"
-                visible: status === "已完成" || status === "待支付" || status === "已支付"
-                onClicked: refundButtonClicked()
+
+            // 3. 乘车人信息列
+            Column {
+                Layout.preferredWidth: 100
+                Layout.alignment: Qt.AlignTop | Qt.AlignHCenter
+                spacing: 6
+
+                FluText {
+                    text: "乘车人"
+                    font.pixelSize: 12
+                    horizontalAlignment: Text.AlignHCenter
+                    color: FluTheme.dark ? Qt.rgba(200/255, 200/255, 200/255, 1) : Qt.rgba(80/255, 80/255, 80/255, 1)
+                }
+                
+                // 显示乘车人姓名
+                Column {
+                    spacing: 2
+                    width: parent.width
+                    
+                    // 使用Repeater显示乘客列表，确保正确处理各种数据情况
+                    Repeater {
+                        model: passengerList
+                        
+                        FluText {
+                            text: modelData.name || "未知乘客"
+                            font.pixelSize: 11
+                            horizontalAlignment: Text.AlignHCenter
+                            color: FluTheme.dark ? Qt.rgba(200/255, 200/255, 200/255, 1) : Qt.rgba(80/255, 80/255, 80/255, 1)
+                        }
+                    }
+                    
+                    // 如果没有乘客，显示提示
+                    FluText {
+                    text: "无乘车人"
+                    font.pixelSize: 11
+                    color: FluTheme.dark ? Qt.rgba(128/255, 128/255, 128/255, 1) : Qt.rgba(160/255, 160/255, 160/255, 1)
+                    horizontalAlignment: Text.AlignHCenter
+                    visible: passengerList.length === 0
+                }
+                }
             }
-            FluFilledButton {
-                text: "去支付"
-                visible: status === "待支付"
-                onClicked: payButtonClicked()
+
+            // 4. 价格和操作列（对应航班卡片的价格和选择按钮列）
+            Column {
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignRight | Qt.AlignTop
+                spacing: 5
+
+                FluText {
+                    text: "¥" + (price || 0).toFixed(2)
+                    font: FluTextStyle.Title
+                    horizontalAlignment: Text.AlignRight
+                }
+
+                // 支付按钮
+                FluButton {
+                    text: "支付"
+                    visible: status === "待支付"
+                    width: 80
+                    onClicked: {
+                        payButtonClicked()
+                    }
+                }
+
+                // 退票按钮
+                FluButton {
+                    text: "退票"
+                    visible: status === "已完成" || status === "待支付" || status === "已支付"
+                    width: 80
+                    onClicked: {
+                        refundButtonClicked()
+                    }
+                }
+
+                // 改签按钮
+                FluButton {
+                    text: "改签"
+                    visible: status === "待支付" || status === "已支付" || status === "已完成"
+                    width: 80
+                    onClicked: {
+                        changeButtonClicked()
+                    }
+                }
             }
         }
     }

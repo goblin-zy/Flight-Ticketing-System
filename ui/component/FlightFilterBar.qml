@@ -63,36 +63,7 @@ FluControlBackground {
         id: flightDateModel
         ListElement { name: "全部" }
         // 2025年12月
-        ListElement { name: "2025-12-01" }
-        ListElement { name: "2025-12-02" }
-        ListElement { name: "2025-12-03" }
-        ListElement { name: "2025-12-04" }
-        ListElement { name: "2025-12-05" }
-        ListElement { name: "2025-12-06" }
-        ListElement { name: "2025-12-07" }
-        ListElement { name: "2025-12-08" }
-        ListElement { name: "2025-12-09" }
-        ListElement { name: "2025-12-10" }
-        ListElement { name: "2025-12-11" }
-        ListElement { name: "2025-12-12" }
-        ListElement { name: "2025-12-13" }
-        ListElement { name: "2025-12-14" }
-        ListElement { name: "2025-12-15" }
-        ListElement { name: "2025-12-16" }
-        ListElement { name: "2025-12-17" }
-        ListElement { name: "2025-12-18" }
-        ListElement { name: "2025-12-19" }
-        ListElement { name: "2025-12-20" }
-        ListElement { name: "2025-12-21" }
-        ListElement { name: "2025-12-22" }
-        ListElement { name: "2025-12-23" }
-        ListElement { name: "2025-12-24" }
-        ListElement { name: "2025-12-25" }
-        ListElement { name: "2025-12-26" }
-        ListElement { name: "2025-12-27" }
-        ListElement { name: "2025-12-28" }
-        ListElement { name: "2025-12-29" }
-        ListElement { name: "2025-12-30" }
+
         ListElement { name: "2025-12-31" }
         // 2026年1月
         ListElement { name: "2026-01-01" }

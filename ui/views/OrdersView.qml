@@ -121,7 +121,7 @@ FluPage {
                 color: "#999999"
             }
 
-            delegate: OrderCard {
+            delegate: OrderInfoCard {
                 // 宽度填满 ListView（减去 margin）
                 width: ListView.view.width - 40
                 height: 180 // 固定高度，或者改为自适应

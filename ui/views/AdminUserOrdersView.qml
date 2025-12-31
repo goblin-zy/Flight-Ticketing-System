@@ -19,6 +19,10 @@ FluPage {
     property string searchOrderId: ""
     // 新增订单状态搜索属性
     property string searchStatus: ""
+    
+    // 新增订单详情相关属性
+    property string currentOrderId: ""
+    property var currentOrderDetails: null
 
     // 12-28修改：添加网络管理器处理真实数据请求
     NetworkManager {
@@ -87,6 +91,21 @@ FluPage {
 
         console.log("12-28修改：🔍 [订单查询] 参数: " + JSON.stringify(params))
         networkManager.request("/api/admin/order/all", NetworkManager.GET, params, userContext.myToken)
+    }
+    
+    // 新增：获取订单详情函数
+    function fetchOrderDetails(orderId) {
+        console.log("🔍 [订单详情查询] 订单ID: " + orderId)
+        networkManager.request("/api/admin/order/" + orderId, NetworkManager.GET, {}, userContext.myToken, function(data) {
+            if (data['code'] === 200) {
+                console.log("订单详情请求成功:", JSON.stringify(data['data'], null, 4))
+                currentOrderDetails = data['data']
+                // 打开详情对话框
+                orderDetailsDialog.open()
+            } else {
+                console.error("订单详情请求失败: " + (data['message'] || "未知错误"))
+            }
+        })
     }
 
     Component.onCompleted: {
@@ -211,6 +230,12 @@ FluPage {
                     passengerName: "用户ID: " + model.userId // 订单列表API返回的是userId
                     telephone: model.telephone
                     status: model.status
+                    
+                    // 连接查看详情信号到处理函数
+                    onViewDetails: {
+                        currentOrderId = orderId
+                        fetchOrderDetails(orderId)
+                    }
                 }
 
                 footer: FluText {
@@ -314,6 +339,185 @@ FluPage {
         
         onPositiveClickListener: {
             statusPopup.close()
+        }
+    }
+    
+    // 新增：订单详情对话框
+    FluContentDialog {
+        id: orderDetailsDialog
+        title: "订单详情 - " + currentOrderId
+        positiveText: "关闭"
+        width: 600
+        height: 400
+        
+        contentDelegate: Component {
+            Rectangle {
+                implicitWidth: 550
+                implicitHeight: 350
+                color: FluTheme.windowBackgroundColor || "#ffffff"
+                
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 24
+                    spacing: 16
+                    
+                    FluText {
+                        text: currentOrderDetails ? "订单信息" : "加载中..."
+                        font.pixelSize: 18
+                        font.bold: true
+                        color: FluTheme.fontPrimaryColor || (FluTheme.dark ? "#ffffff" : "#000000")
+                    }
+                    
+                    Rectangle {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 1
+                        color: FluTheme.dividerColor || "#e0e0e0"
+                    }
+                    
+                    // 如果订单详情已加载，显示内容
+                    ColumnLayout {
+                        visible: currentOrderDetails !== null
+                        spacing: 12
+                        
+                        RowLayout {
+                            spacing: 8
+                            FluText {
+                                text: "订单ID:"
+                                font.pixelSize: 14
+                                color: FluTheme.secondaryTextColor || "#666666"
+                                Layout.minimumWidth: 80
+                                horizontalAlignment: Text.AlignRight
+                            }
+                            FluText {
+                                text: currentOrderDetails.orderId
+                                font.pixelSize: 14
+                                color: FluTheme.fontPrimaryColor || (FluTheme.dark ? "#ffffff" : "#000000")
+                                Layout.fillWidth: true
+                            }
+                        }
+                        
+                        RowLayout {
+                            spacing: 8
+                            FluText {
+                                text: "航班号:"
+                                font.pixelSize: 14
+                                color: FluTheme.secondaryTextColor || "#666666"
+                                Layout.minimumWidth: 80
+                                horizontalAlignment: Text.AlignRight
+                            }
+                            FluText {
+                                text: currentOrderDetails.flightNumber
+                                font.pixelSize: 14
+                                color: FluTheme.fontPrimaryColor || (FluTheme.dark ? "#ffffff" : "#000000")
+                                Layout.fillWidth: true
+                            }
+                        }
+                        
+                        RowLayout {
+                            spacing: 8
+                            FluText {
+                                text: "用户ID:"
+                                font.pixelSize: 14
+                                color: FluTheme.secondaryTextColor || "#666666"
+                                Layout.minimumWidth: 80
+                                horizontalAlignment: Text.AlignRight
+                            }
+                            FluText {
+                                text: currentOrderDetails.userId
+                                font.pixelSize: 14
+                                color: FluTheme.fontPrimaryColor || (FluTheme.dark ? "#ffffff" : "#000000")
+                                Layout.fillWidth: true
+                            }
+                        }
+                        
+                        RowLayout {
+                            spacing: 8
+                            FluText {
+                                text: "手机号:"
+                                font.pixelSize: 14
+                                color: FluTheme.secondaryTextColor || "#666666"
+                                Layout.minimumWidth: 80
+                                horizontalAlignment: Text.AlignRight
+                            }
+                            FluText {
+                                text: currentOrderDetails.telephone
+                                font.pixelSize: 14
+                                color: FluTheme.fontPrimaryColor || (FluTheme.dark ? "#ffffff" : "#000000")
+                                Layout.fillWidth: true
+                            }
+                        }
+                        
+                        RowLayout {
+                            spacing: 8
+                            FluText {
+                                text: "订单状态:"
+                                font.pixelSize: 14
+                                color: FluTheme.secondaryTextColor || "#666666"
+                                Layout.minimumWidth: 80
+                                horizontalAlignment: Text.AlignRight
+                            }
+                            FluText {
+                                text: currentOrderDetails.status
+                                font.pixelSize: 14
+                                color: FluTheme.primaryColor || "#0078d4"
+                                Layout.fillWidth: true
+                            }
+                        }
+                        
+                        RowLayout {
+                            spacing: 8
+                            FluText {
+                                text: "创建时间:"
+                                font.pixelSize: 14
+                                color: FluTheme.secondaryTextColor || "#666666"
+                                Layout.minimumWidth: 80
+                                horizontalAlignment: Text.AlignRight
+                            }
+                            FluText {
+                                text: currentOrderDetails.createTime ? new Date(currentOrderDetails.createTime).toLocaleString() : "-"
+                                font.pixelSize: 14
+                                color: FluTheme.fontPrimaryColor || (FluTheme.dark ? "#ffffff" : "#000000")
+                                Layout.fillWidth: true
+                            }
+                        }
+                        
+                        RowLayout {
+                            spacing: 8
+                            FluText {
+                                text: "更新时间:"
+                                font.pixelSize: 14
+                                color: FluTheme.secondaryTextColor || "#666666"
+                                Layout.minimumWidth: 80
+                                horizontalAlignment: Text.AlignRight
+                            }
+                            FluText {
+                                text: currentOrderDetails.updateTime ? new Date(currentOrderDetails.updateTime).toLocaleString() : "-"
+                                font.pixelSize: 14
+                                color: FluTheme.fontPrimaryColor || (FluTheme.dark ? "#ffffff" : "#000000")
+                                Layout.fillWidth: true
+                            }
+                        }
+                        
+                        // 可以根据实际API返回添加更多字段
+                    }
+                    
+                    // 加载中的提示
+                    FluText {
+                        visible: currentOrderDetails === null
+                        text: "正在加载订单详情..."
+                        font.pixelSize: 14
+                        color: FluTheme.secondaryTextColor || "#666666"
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                    }
+                }
+            }
+        }
+        
+        onPositiveClickListener: {
+            orderDetailsDialog.close()
         }
     }
 }

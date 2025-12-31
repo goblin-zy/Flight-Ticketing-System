@@ -5,7 +5,7 @@ Item {
     id: apiConfig
     
     // API基础URL
-    property string baseUrl: "http://172.17.24.186:8080"
+    property string baseUrl: "http://172.27.122.32:8080"
     
     // 用户相关API
     property string loginUrl: "/api/user/login"
